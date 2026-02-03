@@ -1,4 +1,4 @@
-{ pkgs, lib, config, providers }:
+{ pkgs, lib, config, providers, runtimes, networks }:
 
 let
   # Helper function to get enabled environments
@@ -6,12 +6,12 @@ let
     lib.filterAttrs (_: env: env.enable) service.environments;
 
   # Resolve environment name to saas-controller profile
-  # Returns the profile name to use for a given environment (e.g., "production" → "prod-saas-controller")
+  # Returns the profile name to use for a given environment (e.g., "production" -> "prod-saas-controller")
   resolveSaasControllerProfile = envName:
     config.saas-controller.environmentProfiles.${envName} or config.saas-controller.defaultSaasControllerProfile;
 
   # Resolve saas-controller profile to secretspec provider
-  # Returns the provider name to use for a given profile (e.g., "prod-saas-controller" → "onepassword")
+  # Returns the provider name to use for a given profile (e.g., "prod-saas-controller" -> "onepassword")
   resolveSaasControllerProvider = profileName:
     config.saas-controller.profileProviders.${profileName} or config.saas-controller.defaultProfileProvider;
 
@@ -76,111 +76,40 @@ let
       echo "✅ All ${hookPhase}-deploy hooks completed for ${serviceName}/${environment}"
     '';
 
+  # Resolve the runtime for a service
+  # Per-service override > global default
+  resolveRuntime = service:
+    let
+      runtimeName = service.runtime or config.saas-controller.defaultRuntime;
+    in
+    runtimes.${runtimeName};
+
+  # Resolve the network for a service
+  # Per-service override > global default
+  resolveNetwork = service:
+    let
+      networkName = service.network or config.saas-controller.defaultNetwork;
+    in
+    networks.${networkName};
+
 in
 {
-  # Create a dev-serve script for running a service locally via dev-manager-mcp + Tailscale
+  # Create a dev-serve script by dispatching to the resolved runtime + network
   # Returns a derivation (writeShellScriptBin) that can be added to packages.
   # Scripts are used instead of devenv tasks because devenv tasks buffer all output,
   # which prevents streaming logs to vibe-kanban and interactive terminals.
-  # Each script: mcporter start → Tailscale register → DEVSERVER_URL output → blocking tail loop → cleanup trap
   mkDevServeScript = serviceName: service: variant: command:
     let
-      scriptName = "dev-serve-${serviceName}-${variant}";
+      runtime = resolveRuntime service;
+      network = resolveNetwork service;
       workingDir = "${config.git.root}/${service.providerConfig.path}";
     in
-    pkgs.writeShellScriptBin scriptName ''
-      set -euo pipefail
-
-      # Build the command with environment passthrough
-      # dev-manager-mcp spawns commands outside devenv, so we need to:
-      # 1. Pass OP_SERVICE_ACCOUNT_TOKEN for 1Password auth
-      # 2. Wrap in devenv shell for full PATH (op, bun, etc.)
-      ENV_PREFIX=""
-      if [ -n "''${OP_SERVICE_ACCOUNT_TOKEN:-}" ]; then
-        ENV_PREFIX="OP_SERVICE_ACCOUNT_TOKEN=$OP_SERVICE_ACCOUNT_TOKEN "
-      fi
-      SPAWN_CMD="''${ENV_PREFIX}${pkgs.devenv}/bin/devenv shell -- ${command}"
-
-      echo "Starting ${serviceName}-${variant}..."
-
-      # Start the service via dev-manager-mcp (session_key is auto-generated)
-      START_RESULT=$(npx -y mcporter call dev-manager.start \
-        command="$SPAWN_CMD" \
-        cwd=${lib.escapeShellArg workingDir}) || {
-        echo "Failed to start service via dev-manager-mcp" >&2
-        exit 1
-      }
-
-      # Extract session key and allocated port from result
-      SESSION_KEY=$(echo "$START_RESULT" | ${pkgs.jq}/bin/jq -r '.session_key // empty')
-      ALLOCATED_PORT=$(echo "$START_RESULT" | ${pkgs.jq}/bin/jq -r '.port // empty')
-
-      if [ -z "$SESSION_KEY" ] || [ -z "$ALLOCATED_PORT" ]; then
-        echo "Failed to start service — missing session_key or port" >&2
-        echo "$START_RESULT" >&2
-        exit 1
-      fi
-
-      echo "Started: session=$SESSION_KEY port=$ALLOCATED_PORT"
-
-      # Cleanup handler: deregister Tailscale serve and stop the process
-      cleanup() {
-        echo ""
-        echo "Stopping ${serviceName}-${variant}..."
-        if [ -n "''${ALLOCATED_PORT:-}" ]; then
-          tailscale serve --bg --https="$ALLOCATED_PORT" off 2>/dev/null || true
-        fi
-        npx -y mcporter call dev-manager.stop session_key="$SESSION_KEY" 2>/dev/null || true
-        echo "Stopped."
-      }
-      trap cleanup EXIT INT TERM
-
-      # Register with Tailscale serve for HTTPS access on the tailnet (--bg for background mode)
-      tailscale serve --bg --https="$ALLOCATED_PORT" "http://127.0.0.1:$ALLOCATED_PORT" 2>/dev/null || true
-      HOSTNAME=$(tailscale status --self --json 2>/dev/null | ${pkgs.jq}/bin/jq -r '.Self.DNSName // empty' | sed 's/\.$//')
-      if [ -n "$HOSTNAME" ]; then
-        echo "DEVSERVER_URL: https://''${HOSTNAME}:''${ALLOCATED_PORT}"
-      else
-        echo "DEVSERVER_URL: http://127.0.0.1:''${ALLOCATED_PORT}"
-      fi
-
-      # Blocking tail loop — forward service logs until interrupted
-      PREV_STDOUT_LEN=0
-      PREV_STDERR_LEN=0
-      while true; do
-        sleep 2
-
-        # Check if process is still running
-        STATUS=$(npx -y mcporter call dev-manager.status session_key="$SESSION_KEY" 2>/dev/null) || true
-        IS_RUNNING=$(echo "$STATUS" | ${pkgs.jq}/bin/jq -r '.running // false' 2>/dev/null)
-
-        # Get cumulative logs and print only new content
-        TAIL_RESULT=$(npx -y mcporter call dev-manager.tail session_key="$SESSION_KEY" 2>/dev/null) || true
-        if [ -n "$TAIL_RESULT" ]; then
-          STDOUT=$(echo "$TAIL_RESULT" | ${pkgs.jq}/bin/jq -r '.stdout // empty')
-          STDERR=$(echo "$TAIL_RESULT" | ${pkgs.jq}/bin/jq -r '.stderr // empty')
-
-          # Print new stdout content (tail returns cumulative output)
-          CUR_STDOUT_LEN=''${#STDOUT}
-          if [ "$CUR_STDOUT_LEN" -gt "$PREV_STDOUT_LEN" ]; then
-            echo "''${STDOUT:$PREV_STDOUT_LEN}"
-            PREV_STDOUT_LEN=$CUR_STDOUT_LEN
-          fi
-
-          # Print new stderr content
-          CUR_STDERR_LEN=''${#STDERR}
-          if [ "$CUR_STDERR_LEN" -gt "$PREV_STDERR_LEN" ]; then
-            echo "''${STDERR:$PREV_STDERR_LEN}" >&2
-            PREV_STDERR_LEN=$CUR_STDERR_LEN
-          fi
-        fi
-
-        if [ "$IS_RUNNING" != "true" ]; then
-          echo "Service ${serviceName}-${variant} exited unexpectedly." >&2
-          exit 1
-        fi
-      done
-    '';
+    runtime.mkScript {
+      inherit serviceName service variant command workingDir config;
+      networkSetup = network.setup;
+      networkCleanup = network.cleanup;
+      networkPrintUrl = network.printUrl;
+    };
 
   # Create a task for secret export operation
   # Environment is passed as JSON input at runtime
