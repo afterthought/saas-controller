@@ -2,6 +2,35 @@
 
 SaaS Controller supports external provider registration, allowing teams to add support for new cloud platforms without modifying the core module.
 
+## Hello World Example
+
+A built-in `hello-world` provider is included for testing `sc up` and the dev-serve pipeline end-to-end. Add this to your project's `devenv.nix`:
+
+```nix
+saas-controller = {
+  defaultNetwork = "localhost";   # no Tailscale needed for testing
+  defaultRuntime = "dev-manager-mcp";
+
+  services.hello-world = {
+    enable = true;
+    provider = "hello-world";
+    providerConfig.path = "examples/hello-world";
+    network = "localhost";
+    environments.local.enable = true;
+  };
+};
+```
+
+Then run:
+
+```bash
+sc up              # starts the hello-world server
+# or directly:
+dev-serve-hello-world-server
+```
+
+The server listens on the dynamically assigned `$PORT` and responds with `Hello World` to any HTTP request. Source is in `examples/hello-world/server.mjs`.
+
 ## Quick Start
 
 1. **Create a provider module** following the provider interface
