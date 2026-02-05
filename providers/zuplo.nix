@@ -13,15 +13,28 @@
       COMPOSE_DIR="${composeDir}"
       mkdir -p "$COMPOSE_DIR"
 
+      # Copy package.json and lockfile into compose context for Dockerfile COPY
+      cp "${sourceDir}/package.json" "$COMPOSE_DIR/package.json"
+      cp "${sourceDir}/package-lock.json" "$COMPOSE_DIR/package-lock.json" 2>/dev/null \
+        || cp "${sourceDir}/npm-shrinkwrap.json" "$COMPOSE_DIR/package-lock.json" 2>/dev/null \
+        || true
+
       # Generate Dockerfile (shared by both services)
+      # Installs dependencies at build time so they live in the image layer.
       cat > "$COMPOSE_DIR/Dockerfile" <<'DOCKERFILE'
       FROM node:22
       WORKDIR /app
-      COPY package.json ./
-      RUN npm install
+      COPY package.json package-lock.json* ./
+      RUN npm ci || npm install
       DOCKERFILE
 
       # Generate docker-compose.yml with api + docs services
+      #
+      # Volume strategy:
+      #   1. "${sourceDir}:/app" — bind-mounts host source for live reload
+      #   2. "node_modules:/app/node_modules" — named volume preserves the
+      #      npm-installed modules from the image build, preventing the bind-mount
+      #      from overwriting them with the host's (possibly empty) node_modules
       cat > "$COMPOSE_DIR/docker-compose.yml" <<COMPOSEFILE
       services:
         zuplo-api:
@@ -30,7 +43,7 @@
             dockerfile: Dockerfile
           volumes:
             - ${sourceDir}:/app
-            - /app/node_modules
+            - node_modules:/app/node_modules
           ports:
             - "3000:3000"
           environment:
@@ -43,12 +56,15 @@
             dockerfile: Dockerfile
           volumes:
             - ${sourceDir}:/app
-            - /app/node_modules
+            - node_modules:/app/node_modules
           ports:
             - "3001:3001"
           environment:
             - ZUDOKU_PUBLIC_SERVER_URL=http://localhost:3000
           command: ["npx", "zuplo", "docs", "--port", "3001"]
+
+      volumes:
+        node_modules:
       COMPOSEFILE
 
       export DEVSERVER_URL="http://localhost:3000"

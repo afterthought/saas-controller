@@ -11,58 +11,12 @@
   # Args:
   #   - serviceName: Name of the service
   #   - service: Full service configuration object
-  # Returns: Bash script string that:
-  #   1. Creates .saas-controller/compose/${serviceName}/ directory
-  #   2. Generates Dockerfile and docker-compose.yml
-  #   3. Sets DEVSERVER_URL and prints it for VibeKanban capture
-  #   4. Registers trap for cleanup (docker compose down on EXIT/INT/TERM)
-  #   5. Runs docker compose up --build in foreground
-  up = serviceName: service:
-    let
-      composeDir = "${config.git.root}/.saas-controller/compose/${serviceName}";
-      sourceDir = "${config.git.root}/${service.providerConfig.path}";
-    in
-    ''
-      set -euo pipefail
-
-      COMPOSE_DIR="${composeDir}"
-      mkdir -p "$COMPOSE_DIR"
-
-      # Generate Dockerfile
-      cat > "$COMPOSE_DIR/Dockerfile" <<'DOCKERFILE'
-      FROM node:22
-      WORKDIR /app
-      # TODO: Add your base image and setup steps
-      DOCKERFILE
-
-      # Generate docker-compose.yml
-      # TODO: Define your services. For composite services, add multiple entries.
-      cat > "$COMPOSE_DIR/docker-compose.yml" <<COMPOSEFILE
-      services:
-        ${serviceName}:
-          build:
-            context: .
-            dockerfile: Dockerfile
-          volumes:
-            - ${sourceDir}:/app
-          ports:
-            - "3000:3000"
-          environment:
-            - PORT=3000
-          command: ["node", "server.mjs"]
-      COMPOSEFILE
-
-      export DEVSERVER_URL="http://localhost:3000"
-      echo "DEVSERVER_URL: $DEVSERVER_URL"
-
-      cleanup() {
-        echo "Stopping ${serviceName}..."
-        docker compose -f "$COMPOSE_DIR/docker-compose.yml" down 2>/dev/null || true
-      }
-      trap cleanup EXIT INT TERM
-
-      docker compose -f "$COMPOSE_DIR/docker-compose.yml" up --build
-    '';
+  # Returns: Bash script string that generates compose files in
+  #   .saas-controller/compose/${serviceName}/, starts the stack,
+  #   prints DEVSERVER_URL, and cleans up on exit.
+  # See providers/hello-world.nix for a minimal example,
+  #     providers/zuplo.nix for a multi-service composite example.
+  # up = serviceName: service: ''...'';
 
   # REQUIRED: One-time project/account creation
   # Called by: provision-projects
