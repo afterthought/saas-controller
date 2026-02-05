@@ -1,4 +1,4 @@
-{ pkgs, lib, config, providers, runtimes, networks }:
+{ pkgs, lib, config, providers }:
 
 let
   # Helper function to get enabled environments
@@ -76,41 +76,8 @@ let
       echo "✅ All ${hookPhase}-deploy hooks completed for ${serviceName}/${environment}"
     '';
 
-  # Resolve the runtime for a service
-  # Per-service override > global default
-  resolveRuntime = service:
-    let
-      runtimeName = service.runtime or config.saas-controller.defaultRuntime;
-    in
-    runtimes.${runtimeName};
-
-  # Resolve the network for a service
-  # Per-service override > global default
-  resolveNetwork = service:
-    let
-      networkName = service.network or config.saas-controller.defaultNetwork;
-    in
-    networks.${networkName};
-
 in
 {
-  # Create a dev-serve script by dispatching to the resolved runtime + network
-  # Returns a derivation (writeShellScriptBin) that can be added to packages.
-  # Scripts are used instead of devenv tasks because devenv tasks buffer all output,
-  # which prevents streaming logs to vibe-kanban and interactive terminals.
-  mkDevServeScript = serviceName: service: variant: command:
-    let
-      runtime = resolveRuntime service;
-      network = resolveNetwork service;
-      workingDir = "${config.git.root}/${service.providerConfig.path}";
-    in
-    runtime.mkScript {
-      inherit serviceName service variant command workingDir config;
-      networkSetup = network.setup;
-      networkCleanup = network.cleanup;
-      networkPrintUrl = network.printUrl;
-    };
-
   # Create a task for secret export operation
   # Environment is passed as JSON input at runtime
   mkSecretExportTask = exportName: exportConfig:
