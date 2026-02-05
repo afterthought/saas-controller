@@ -27,34 +27,8 @@ let
   # Merge builtin and external providers (external can override builtin if needed)
   providers = builtinProviders // externalProviders;
 
-  # Import builtin runtimes (process lifecycle managers)
-  builtinRuntimes = {
-    dev-manager-mcp = import ./runtimes/dev-manager-mcp.nix { inherit pkgs lib; };
-    docker-compose = import ./runtimes/docker-compose.nix { inherit pkgs lib; };
-    launchd = import ./runtimes/launchd.nix { inherit pkgs lib; };
-  };
-
-  # Load external runtimes from configuration
-  externalRuntimes = lib.mapAttrs
-    (name: path: import path { inherit pkgs lib; })
-    config.saas-controller.externalRuntimes;
-
-  # Merge builtin and external runtimes
-  runtimes = builtinRuntimes // externalRuntimes;
-
-  # Import network strategies (URL exposure)
-  builtinNetworks = import ./lib/networks.nix { inherit pkgs lib; };
-
-  # Load external networks from configuration
-  externalNetworks = lib.mapAttrs
-    (name: path: import path { inherit pkgs lib; })
-    config.saas-controller.externalNetworks;
-
-  # Merge builtin and external networks
-  networks = builtinNetworks // externalNetworks;
-
-  # Import task helpers (now receives runtimes and networks)
-  helpers = import ./lib/helpers.nix { inherit pkgs lib config providers runtimes networks; };
+  # Import task helpers
+  helpers = import ./lib/helpers.nix { inherit pkgs lib config providers; };
 
   # Import dependency validation
   depValidator = import ./lib/dependencies.nix { inherit lib config; };
@@ -353,70 +327,6 @@ in
       '';
     };
 
-    # Runtime configuration (process lifecycle management)
-    defaultRuntime = lib.mkOption {
-      type = lib.types.str;
-      default = "dev-manager-mcp";
-      description = ''
-        Default runtime for dev-serve scripts.
-        Controls how processes are started, stopped, and monitored.
-        Builtin runtimes: dev-manager-mcp, docker-compose, launchd
-      '';
-    };
-
-    # Network configuration (URL exposure)
-    defaultNetwork = lib.mkOption {
-      type = lib.types.str;
-      default = "tailscale";
-      description = ''
-        Default network strategy for dev-serve scripts.
-        Controls how services are exposed (Tailscale HTTPS, localhost-only, etc.).
-        Builtin networks: tailscale, localhost
-      '';
-    };
-
-    # External runtime registration
-    externalRuntimes = lib.mkOption {
-      type = lib.types.attrsOf lib.types.path;
-      default = { };
-      description = ''
-        External runtime modules to register with the SaaS controller.
-        Keys are runtime names, values are paths to runtime .nix files.
-
-        Runtime modules must export:
-        - name: Runtime identifier
-        - requiredPackages: List of packages needed
-        - mkScript: Function returning a writeShellScriptBin derivation
-      '';
-      example = lib.literalExpression ''
-        {
-          podman = ./runtimes/podman.nix;
-        }
-      '';
-    };
-
-    # External network registration
-    externalNetworks = lib.mkOption {
-      type = lib.types.attrsOf lib.types.path;
-      default = { };
-      description = ''
-        External network strategy modules to register with the SaaS controller.
-        Keys are network names, values are paths to network .nix files.
-
-        Network modules must export:
-        - name: Network identifier
-        - setup: Bash snippet (sets $DEVSERVER_URL after $PORT is set)
-        - cleanup: Bash snippet (deregister, called in trap)
-        - printUrl: Bash snippet (echo the URL)
-      '';
-      example = lib.literalExpression ''
-        {
-          ngrok = ./networks/ngrok.nix;
-          cloudflare-tunnel = ./networks/cloudflare.nix;
-        }
-      '';
-    };
-
     # Service catalog
     services = lib.mkOption {
       type = lib.types.attrsOf (lib.types.submodule ({ name, ... }: {
@@ -448,28 +358,6 @@ in
               account = "willdan";
               path = "dev-portals/atlas3-dev";
             };
-          };
-
-          runtime = lib.mkOption {
-            type = lib.types.nullOr lib.types.str;
-            default = null;
-            description = ''
-              Process runtime override for this service's dev-serve scripts.
-              If null, falls back to saas-controller.defaultRuntime.
-              Available: dev-manager-mcp, docker-compose, launchd, or any registered external runtime.
-            '';
-            example = "docker-compose";
-          };
-
-          network = lib.mkOption {
-            type = lib.types.nullOr lib.types.str;
-            default = null;
-            description = ''
-              Network strategy override for this service's dev-serve scripts.
-              If null, falls back to saas-controller.defaultNetwork.
-              Available: tailscale, localhost, or any registered external network.
-            '';
-            example = "localhost";
           };
 
           environments = lib.mkOption {
@@ -846,10 +734,6 @@ in
       # List of all registered providers (builtin + external)
       validProviders = lib.attrNames providers;
 
-      # List of all registered runtimes and networks
-      validRuntimes = lib.attrNames runtimes;
-      validNetworks = lib.attrNames networks;
-
       # Collect all hook providers used across all services
       allHookProviders = lib.unique (lib.flatten (
         lib.mapAttrsToList
@@ -948,88 +832,16 @@ in
             }
           )
           allHookProviders)
-
-        # Validate default runtime
-        [{
-          assertion = lib.elem config.saas-controller.defaultRuntime validRuntimes;
-          message = ''
-            Default runtime "${config.saas-controller.defaultRuntime}" is not registered.
-            Available runtimes: ${lib.concatStringsSep ", " validRuntimes}
-          '';
-        }]
-
-        # Validate default network
-        [{
-          assertion = lib.elem config.saas-controller.defaultNetwork validNetworks;
-          message = ''
-            Default network "${config.saas-controller.defaultNetwork}" is not registered.
-            Available networks: ${lib.concatStringsSep ", " validNetworks}
-          '';
-        }]
-
-        # Validate per-service runtime overrides
-        (lib.mapAttrsToList
-          (serviceName: service:
-            {
-              assertion = service.runtime == null || lib.elem service.runtime validRuntimes;
-              message = ''
-                Service "${serviceName}" uses unknown runtime "${service.runtime}".
-                Available runtimes: ${lib.concatStringsSep ", " validRuntimes}
-
-                To use "${service.runtime}", register it via:
-                  saas-controller.externalRuntimes.${service.runtime} = ./path/to/runtime.nix;
-              '';
-            }
-          )
-          config.saas-controller.services)
-
-        # Validate per-service network overrides
-        (lib.mapAttrsToList
-          (serviceName: service:
-            {
-              assertion = service.network == null || lib.elem service.network validNetworks;
-              message = ''
-                Service "${serviceName}" uses unknown network "${service.network}".
-                Available networks: ${lib.concatStringsSep ", " validNetworks}
-
-                To use "${service.network}", register it via:
-                  saas-controller.externalNetworks.${service.network} = ./path/to/network.nix;
-              '';
-            }
-          )
-          config.saas-controller.services)
       ];
 
       # Add required packages if any SaaS operations are enabled
-      packages = lib.mkIf anySaasOperationsEnabled ((with pkgs; [
+      packages = lib.mkIf anySaasOperationsEnabled (with pkgs; [
         jq # JSON processing
         curl # HTTP requests (Datadog API, etc.)
         secretspec # Secret management
         _1password-cli # 1Password integration
         config.languages.javascript.package # Use configured Node.js version
-      ]) ++ (
-        # Dev-serve scripts for services with "local" environment
-        # Scripts are used instead of devenv tasks because devenv tasks buffer all output,
-        # which prevents streaming logs to vibe-kanban and interactive terminals.
-        let
-          devServeScripts = lib.flatten (lib.mapAttrsToList
-            (serviceName: service:
-              let
-                localEnv = service.environments.local or null;
-                hasLocal = localEnv != null && localEnv.enable;
-                provider = providers.${service.provider} or null;
-                variants = if provider != null && provider ? localVariants
-                  then provider.localVariants serviceName service
-                  else [];
-              in
-              lib.optionals hasLocal (map (v:
-                helpers.mkDevServeScript serviceName service v.variant v.command
-              ) variants)
-            )
-            enabledServices);
-        in
-        devServeScripts
-      ));
+      ]);
       # Override secretspec with custom fork that supports export-plus-providers
       # Includes --include/--exclude filter flags for selective secret export
       overlays = [
@@ -1401,48 +1213,61 @@ in
                             # Default environment for 'up' is 'local'
                             ENVIRONMENT="''${ENVIRONMENT:-local}"
 
+                            # Collect compose dirs for cleanup
+                            COMPOSE_DIRS=()
+
+                            cleanup_all() {
+                              echo ""
+                              echo "Stopping all services..."
+                              for dir in "''${COMPOSE_DIRS[@]}"; do
+                                docker compose -f "$dir/docker-compose.yml" down 2>/dev/null || true
+                              done
+                            }
+                            trap cleanup_all EXIT INT TERM
+
                             if [ -n "$SERVICE" ]; then
                               echo "🚀 Starting service: $SERVICE (environment: $ENVIRONMENT)"
-                              # Look up dev-serve scripts for the requested service
                               FOUND=false
-                              ${lib.concatStringsSep "\n                              " (lib.flatten (lib.mapAttrsToList (serviceName: service:
+                              ${lib.concatStringsSep "\n                              " (lib.mapAttrsToList (serviceName: service:
                                 let
                                   localEnv = service.environments.local or null;
                                   hasLocal = localEnv != null && localEnv.enable;
                                   provider = providers.${service.provider} or null;
-                                  variants = if provider != null && provider ? localVariants
-                                    then provider.localVariants serviceName service
-                                    else [];
+                                  hasUp = provider != null && provider ? up;
+                                  upScript = if hasUp then provider.up serviceName service else "";
                                 in
-                                lib.optionals hasLocal [(''
+                                lib.optionalString (hasLocal && hasUp) ''
                                   if [ "$SERVICE" = "${serviceName}" ]; then
                                     FOUND=true
-                                    ${lib.concatStringsSep "\n                                    " (map (v:
-                                      ''dev-serve-${serviceName}-${v.variant} &''
-                                    ) variants)}
+                                    COMPOSE_DIRS+=("${config.git.root}/.saas-controller/compose/${serviceName}")
+                                    (
+                                      ${upScript}
+                                    ) &
                                   fi
-                                '')]
-                              ) enabledServices))}
+                                ''
+                              ) enabledServices)}
                               if [ "$FOUND" = "false" ]; then
-                                echo "❌ Error: No local dev-serve scripts found for service: $SERVICE" >&2
+                                echo "❌ Error: No local dev configuration found for service: $SERVICE" >&2
                                 exit 1
                               fi
                               wait
                             else
                               echo "🚀 Starting all services (environment: $ENVIRONMENT)"
-                              ${lib.concatStringsSep "\n                              " (lib.flatten (lib.mapAttrsToList (serviceName: service:
+                              ${lib.concatStringsSep "\n                              " (lib.mapAttrsToList (serviceName: service:
                                 let
                                   localEnv = service.environments.local or null;
                                   hasLocal = localEnv != null && localEnv.enable;
                                   provider = providers.${service.provider} or null;
-                                  variants = if provider != null && provider ? localVariants
-                                    then provider.localVariants serviceName service
-                                    else [];
+                                  hasUp = provider != null && provider ? up;
+                                  upScript = if hasUp then provider.up serviceName service else "";
                                 in
-                                lib.optionals hasLocal (map (v: ''
-                                  dev-serve-${serviceName}-${v.variant} &
-                                '') variants)
-                              ) enabledServices))}
+                                lib.optionalString (hasLocal && hasUp) ''
+                                  COMPOSE_DIRS+=("${config.git.root}/.saas-controller/compose/${serviceName}")
+                                  (
+                                    ${upScript}
+                                  ) &
+                                ''
+                              ) enabledServices)}
                               wait
                             fi
                             ;;
@@ -1478,7 +1303,7 @@ in
               sc <command> [service] [--environment <env>]
 
             Commands:
-              up          Start local dev services via dev-manager-mcp + Tailscale (default env: local)
+              up          Start local dev services via docker-compose (default env: local)
               deploy      Deploy service(s) with pre/post hooks (default env: development)
               help        Show this help message
 

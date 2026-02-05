@@ -1,28 +1,85 @@
 { pkgs, lib, config }:
 
 {
-  # Local dev-serve variants this provider supports
-  # Returns a list of { variant, command } for each local process a service runs
-  localVariants = serviceName: service:
+  # Local dev lifecycle: generate docker-compose.yml with api + docs services
+  up = serviceName: service:
     let
-      # Get secretSource with environment-specific override or default
-      secretSource =
-        if service.run.environments.local.secretSource or null != null
-        then service.run.environments.local.secretSource
-        else service.run.secretSource or null;
-      secretPrefix = lib.optionalString (secretSource != null)
-        "${pkgs.secretspec}/bin/secretspec run --provider ${secretSource} --profile local -- ";
+      composeDir = "${config.git.root}/.saas-controller/compose/${serviceName}";
+      sourceDir = "${config.git.root}/${service.providerConfig.path}";
     in
-    [
-      {
-        variant = "api";
-        command = "${secretPrefix}bun x zuplo dev --port $PORT --start-docs false --start-editor false";
+    ''
+      set -euo pipefail
+
+      COMPOSE_DIR="${composeDir}"
+      mkdir -p "$COMPOSE_DIR"
+
+      # Copy package.json and lockfile into compose context for Dockerfile COPY
+      cp "${sourceDir}/package.json" "$COMPOSE_DIR/package.json"
+      cp "${sourceDir}/package-lock.json" "$COMPOSE_DIR/package-lock.json" 2>/dev/null \
+        || cp "${sourceDir}/npm-shrinkwrap.json" "$COMPOSE_DIR/package-lock.json" 2>/dev/null \
+        || true
+
+      # Generate Dockerfile (shared by both services)
+      # Installs dependencies at build time so they live in the image layer.
+      cat > "$COMPOSE_DIR/Dockerfile" <<'DOCKERFILE'
+      FROM node:22
+      WORKDIR /app
+      COPY package.json package-lock.json* ./
+      RUN npm ci || npm install
+      DOCKERFILE
+
+      # Generate docker-compose.yml with api + docs services
+      #
+      # Volume strategy:
+      #   1. "${sourceDir}:/app" — bind-mounts host source for live reload
+      #   2. "node_modules:/app/node_modules" — named volume preserves the
+      #      npm-installed modules from the image build, preventing the bind-mount
+      #      from overwriting them with the host's (possibly empty) node_modules
+      cat > "$COMPOSE_DIR/docker-compose.yml" <<COMPOSEFILE
+      services:
+        zuplo-api:
+          build:
+            context: .
+            dockerfile: Dockerfile
+          volumes:
+            - ${sourceDir}:/app
+            - node_modules:/app/node_modules
+          ports:
+            - "3000:3000"
+          environment:
+            - ZUDOKU_PUBLIC_SERVER_URL=http://localhost:3000
+          command: ["npx", "zuplo", "dev", "--port", "3000", "--start-docs", "false", "--start-editor", "false"]
+
+        zuplo-docs:
+          build:
+            context: .
+            dockerfile: Dockerfile
+          volumes:
+            - ${sourceDir}:/app
+            - node_modules:/app/node_modules
+          ports:
+            - "3001:3001"
+          environment:
+            - ZUDOKU_PUBLIC_SERVER_URL=http://localhost:3000
+          command: ["npx", "zuplo", "docs", "--port", "3001"]
+
+      volumes:
+        node_modules:
+      COMPOSEFILE
+
+      export DEVSERVER_URL="http://localhost:3000"
+      echo "DEVSERVER_URL: $DEVSERVER_URL"
+
+      # Cleanup on exit
+      cleanup() {
+        echo "Stopping ${serviceName}..."
+        docker compose -f "$COMPOSE_DIR/docker-compose.yml" down 2>/dev/null || true
       }
-      {
-        variant = "docs";
-        command = "${secretPrefix}bun x zuplo docs --port $PORT";
-      }
-    ];
+      trap cleanup EXIT INT TERM
+
+      # Start compose stack in foreground
+      docker compose -f "$COMPOSE_DIR/docker-compose.yml" up --build
+    '';
 
   # Provision top-level Zuplo project (one-time operation)
   provisionProject = serviceName: service: ''

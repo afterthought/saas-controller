@@ -6,6 +6,18 @@
 { pkgs, lib, config }:
 
 {
+  # OPTIONAL: Local dev lifecycle via docker-compose
+  # Called by: sc up <service>
+  # Args:
+  #   - serviceName: Name of the service
+  #   - service: Full service configuration object
+  # Returns: Bash script string that generates compose files in
+  #   .saas-controller/compose/${serviceName}/, starts the stack,
+  #   prints DEVSERVER_URL, and cleans up on exit.
+  # See providers/hello-world.nix for a minimal example,
+  #     providers/zuplo.nix for a multi-service composite example.
+  # up = serviceName: service: ''...'';
+
   # REQUIRED: One-time project/account creation
   # Called by: provision-projects
   # Args:

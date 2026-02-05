@@ -1,6 +1,6 @@
 # Provider: hello-world
 #
-# A minimal provider for testing sc up / dev-serve.
+# A minimal provider for testing sc up.
 # Runs a simple Node.js HTTP server that responds with "Hello World".
 #
 # Usage in your devenv.nix:
@@ -8,19 +8,59 @@
 #     enable = true;
 #     provider = "hello-world";
 #     providerConfig.path = "examples/hello-world";
-#     network = "localhost";
 #     environments.local.enable = true;
 #   };
 
 { pkgs, lib, config }:
 
 {
-  localVariants = serviceName: service: [
-    {
-      variant = "server";
-      command = "node ${config.git.root}/${service.providerConfig.path}/server.mjs";
-    }
-  ];
+  # Local dev lifecycle: generate docker-compose.yml and run the stack
+  up = serviceName: service:
+    let
+      composeDir = "${config.git.root}/.saas-controller/compose/${serviceName}";
+      sourceDir = "${config.git.root}/${service.providerConfig.path}";
+    in
+    ''
+      set -euo pipefail
+
+      COMPOSE_DIR="${composeDir}"
+      mkdir -p "$COMPOSE_DIR"
+
+      # Generate Dockerfile
+      cat > "$COMPOSE_DIR/Dockerfile" <<'DOCKERFILE'
+      FROM node:22
+      WORKDIR /app
+      CMD ["node", "server.mjs"]
+      DOCKERFILE
+
+      # Generate docker-compose.yml
+      cat > "$COMPOSE_DIR/docker-compose.yml" <<COMPOSEFILE
+      services:
+        ${serviceName}:
+          build:
+            context: .
+            dockerfile: Dockerfile
+          volumes:
+            - ${sourceDir}:/app
+          ports:
+            - "3000:3000"
+          environment:
+            - PORT=3000
+      COMPOSEFILE
+
+      export DEVSERVER_URL="http://localhost:3000"
+      echo "DEVSERVER_URL: $DEVSERVER_URL"
+
+      # Cleanup on exit
+      cleanup() {
+        echo "Stopping ${serviceName}..."
+        docker compose -f "$COMPOSE_DIR/docker-compose.yml" down 2>/dev/null || true
+      }
+      trap cleanup EXIT INT TERM
+
+      # Start compose stack in foreground
+      docker compose -f "$COMPOSE_DIR/docker-compose.yml" up --build
+    '';
 
   provisionProject = serviceName: service: ''
     echo "  hello-world: nothing to provision"
