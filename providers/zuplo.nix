@@ -69,6 +69,7 @@
           environment:
             - TS_HOSTNAME=$TS_HOSTNAME
             - TS_AUTHKEY=\''${TS_CLIENT_SECRET}?ephemeral=true
+            - TS_EXTRA_ARGS=--advertise-tags=tag:sc-dev
             - TS_SERVE_CONFIG=/config/serve.json
             - TS_STATE_DIR=/var/lib/tailscale
             - TS_USERSPACE=false
