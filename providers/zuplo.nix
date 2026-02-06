@@ -33,7 +33,7 @@
       DOCKERFILE
 
       # Generate serve-config.json for tailscale HTTPS routing
-      # Uses ${TS_CERT_DOMAIN} placeholder — containerboot replaces it with the node's FQDN
+      # Uses TS_CERT_DOMAIN placeholder — containerboot replaces it with the node's FQDN
       cat > "$COMPOSE_DIR/serve-config.json" <<'SERVECONFIG'
       {
         "TCP": {
