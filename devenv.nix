@@ -60,9 +60,9 @@ in
       }));
       default = {
         tailscale = {
-          TS_CLIENT_SECRET = { description = "Tailscale OAuth client secret for ephemeral node creation"; providers = [ "onepassword://madswan@willdan-corp" ]; };
-          TS_CLIENT_ID = { description = "Tailscale OAuth client ID"; required = false; providers = [ "onepassword://madswan@willdan-corp" ]; };
-          SC_TAILNET = { description = "Tailnet MagicDNS suffix, e.g. my-tailnet.ts.net (auto-detected if host tailscale installed)"; required = false; providers = [ "onepassword://madswan@willdan-corp" ]; };
+          TS_CLIENT_SECRET = { description = "Tailscale OAuth client secret for ephemeral node creation"; providers = [ "saas-controller" ]; };
+          TS_CLIENT_ID = { description = "Tailscale OAuth client ID"; required = false; providers = [ "saas-controller" ]; };
+          SC_TAILNET = { description = "Tailnet MagicDNS suffix, e.g. my-tailnet.ts.net (auto-detected if host tailscale installed)"; required = false; providers = [ "saas-controller" ]; };
         };
       };
       description = ''
@@ -76,11 +76,11 @@ in
       example = lib.literalExpression ''
         {
           tailscale = {
-            TS_CLIENT_SECRET = { description = "Tailscale OAuth client secret"; };
-            TS_CLIENT_ID = { description = "Tailscale OAuth client ID"; required = false; };
+            TS_CLIENT_SECRET = { description = "Tailscale OAuth client secret"; providers = [ "saas-controller" ]; };
+            TS_CLIENT_ID = { description = "Tailscale OAuth client ID"; required = false; providers = [ "saas-controller" ]; };
           };
           zuplo-backend = {
-            ZUPLO_API_KEY = { description = "Zuplo API key for deployments"; };
+            ZUPLO_API_KEY = { description = "Zuplo API key for deployments"; providers = [ "saas-controller" ]; };
           };
         }
       '';
