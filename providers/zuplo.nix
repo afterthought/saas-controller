@@ -100,7 +100,7 @@
             - node_modules:/app/node_modules
           environment:
             - ZUDOKU_PUBLIC_SERVER_URL=https://$FQDN:8443
-            - DANGEROUSLY_DISABLE_HOST_CHECK=true
+            - __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=$FQDN
           command: ["npx", "zuplo", "dev", "--port", "30000", "--start-docs", "false", "--start-editor", "false"]
 
         zuplo-docs:
@@ -116,7 +116,7 @@
             - node_modules:/app/node_modules
           environment:
             - ZUDOKU_PUBLIC_SERVER_URL=https://$FQDN:443
-            - DANGEROUSLY_DISABLE_HOST_CHECK=true
+            - __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=$FQDN
           command: ["npx", "zuplo", "docs", "--port", "30001"]
 
       volumes:
