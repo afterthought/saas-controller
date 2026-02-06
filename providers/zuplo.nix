@@ -128,7 +128,14 @@
       trap cleanup EXIT INT TERM
 
       # Start compose stack detached, wait for healthchecks
-      docker compose -f "$COMPOSE_DIR/docker-compose.yml" up -d --build --wait
+      if ! docker compose -f "$COMPOSE_DIR/docker-compose.yml" up -d --build --wait; then
+        echo ""
+        echo "❌ Failed to start ${serviceName}. Container logs:"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        docker compose -f "$COMPOSE_DIR/docker-compose.yml" logs --tail=50 2>&1 || true
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        exit 1
+      fi
 
       # Print HTTPS URLs
       export DEVSERVER_URL="https://''${FQDN}:443"
