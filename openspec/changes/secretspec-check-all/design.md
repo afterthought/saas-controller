@@ -1,69 +1,125 @@
 ## Context
 
-SaaS Controller manages secrets at two levels: control plane (controller credentials like ZUPLO_API_KEY, FRONTEGG_*) and data plane (per-service runtime secrets). The control plane has three validation scripts (`check-saas-controller-secrets`, `check-dev-saas-controller`, `check-prod-saas-controller`) that only validate the controller's own profiles. Per-service secretspec projects have no validation mechanism.
+SaaS Controller manages two distinct secret concerns:
 
-The `sc up` command requires `TS_CLIENT_SECRET` for tailscale sidecar containers but validates this with a raw bash `[ -z ]` check rather than secretspec. Services that need additional secrets for local dev (API keys, database URLs) have no pre-flight validation at all.
+1. **Control plane credentials** (ZUPLO_API_KEY, FRONTEGG_*): Needed by CI to authenticate to cloud providers when running `sc deploy`. Currently baked into the module via `secretspecContext`, `profileProviders`, `environmentProfiles`, and `withControlPlaneSecrets` wrapper in helpers.nix. In practice (willdan-dev), these are already handled externally — GitHub Actions loads them from 1Password and the module's built-in wrapping is redundant.
 
-The secretspec fork (afterthought/secretspec at commit 8744fa9) supports `required = false` on individual secrets, `--provider` and `--profile` flags for check/run/export, and `--include`/`--exclude` filter patterns.
+2. **Service-level secrets** (TS_CLIENT_SECRET, app API keys, database URLs): Needed by services at runtime. No validation mechanism exists — developers discover missing secrets when `sc up` fails or containers crash.
+
+The secretspec fork (afterthought/secretspec at commit 8744fa9) supports `required = false`, `--provider`/`--profile` flags, and per-secret `providers` lists.
 
 ## Goals / Non-Goals
 
 **Goals:**
-- Unified `sc check-secrets` command that validates controller + all registered service secretspec projects in one pass
-- Per-service `secretspec` option in the service submodule so services opt into validation
-- Tag-based filtering so `sc check-secrets --tag tailscale` checks only relevant services
-- Static `secretspec.toml` for test-gateway example with tailscale vars (TS_CLIENT_SECRET required, TS_CLIENT_ID and SC_TAILNET optional)
-- Deprecation path from old check scripts to new unified command
+- Decouple CI/deployment credential management from saas-controller core
+- Introduce service profiles: named secret sets defined at the controller level, composable per-environment per-service
+- Dynamically generate secretspec.toml per service from its service profile selections
+- Unified `sc check-secrets` command validating all services across all environment profiles
+- Tag-based and service-name filtering for targeted checks
 
 **Non-Goals:**
-- Auto-generation of secretspec.toml from nix config (services maintain their own static TOML files)
-- Auto-extends / tag-based composition (composing shared secret sets into generated TOMLs)
-- Pre-flight gate in `sc up` (can be added as a follow-up)
-- enterShell integration (checks are on-demand only)
-- Changes to the secretspec-export provider or include/exclude pattern system
+- Managing CI/deployment credentials (ZUPLO_API_KEY) — this is the caller's responsibility
+- Replacing the secretspec-export provider or include/exclude pattern system for deploy hooks
+- Auto-running checks on shell entry or as `sc up` pre-flight (can be added later)
+- Changes to the secretspec binary itself
 
 ## Decisions
 
-### Use existing service registry instead of separate secretspecDirs option
+### Decouple control plane secrets from saas-controller core
 
-The mac-nix project uses a standalone `custom.secretspecDirs` list. In saas-controller, services are already registered via `config.saas-controller.services` with `providerConfig.path` pointing to their source directory. Adding a parallel registry would risk drift.
+The `secretspecContext`, `profileProviders`, `environmentProfiles`, `defaultProfileProvider`, `defaultSaasControllerProfile` options and `generateControllerSecretspecCmd` are removed. The `withControlPlaneSecrets` wrapper in helpers.nix and the `resolveSaasControllerProfile`/`resolveSaasControllerProvider` helpers are removed. Deploy tasks run without secretspec wrapping — the caller provides credentials in the environment.
 
-**Decision**: Derive check targets from the service registry. Services with `secretspec != null` participate in checks. The secretspec path defaults to `providerConfig.path`.
+**Rationale**: Willdan-dev already handles this externally via GitHub Actions + 1Password. The module's wrapping is redundant and couples the core to a specific credential management strategy. For AWS-based deployments, OIDC auth from GitHub replaces 1Password entirely — the module shouldn't encode assumptions about how credentials arrive.
 
-**Alternative considered**: Separate `secretspecDirs` option (mac-nix pattern). Rejected because it duplicates service registration and could get out of sync.
+**Alternative considered**: Keep the options but make them optional. Rejected because it maintains dead code paths and confusing dual responsibility.
 
-### Static secretspec.toml files, not generated
+**Migration**: Consumers remove references to deleted options from their devenv.nix. CI workflows that already wrap `sc deploy` with `secretspec run` (like willdan-dev) need no changes. Those relying on the built-in wrapping must add `secretspec run` to their CI.
 
-Services maintain their own `secretspec.toml` checked into the repo. The controller's dynamic generation (`generateControllerSecretspecCmd`) already exists and continues unchanged.
+### Service profiles as controller-level named secret sets
 
-**Decision**: No `generate = true` mechanism. Each service that needs validation creates a static `secretspec.toml` in its directory.
+New `saas-controller.secretProfiles` option: an attrset mapping profile names to secret definitions.
 
-**Alternative considered**: Auto-generation from nix config with tag-based composition via `secretspecTagSources`. Rejected because it adds complexity without a concrete use case—if we later find duplicated declarations across many services, we can add composition then.
+```nix
+saas-controller.secretProfiles = {
+  tailscale = {
+    TS_CLIENT_SECRET = { description = "Tailscale OAuth client secret"; };
+    TS_CLIENT_ID = { description = "Tailscale OAuth client ID"; required = false; };
+    SC_TAILNET = { description = "Tailnet MagicDNS suffix"; required = false; };
+  };
+  zuplo-backend = {
+    ZUPLO_API_KEY = { description = "Zuplo API key for deployments"; };
+  };
+  zuplo-public = {
+    ZUDOKU_PUBLIC_SERVER_URL = { description = "Public server URL for Zudoku"; };
+  };
+};
+```
 
-### Tags for filtering only, not composition
+Providers can register defaults (e.g., zuplo.nix could add `zuplo-backend` and `zuplo-public`). Consumers can extend or override with `lib.mkForce` or `lib.mkMerge`.
 
-Tags on the service secretspec config are used exclusively for `--tag` filtering in `sc check-secrets`. They do not affect TOML generation or secret inheritance.
+**Rationale**: Named profiles are reusable across services. A new Zuplo site just picks `[ "tailscale" "zuplo-backend" ]` — no need to redeclare individual secrets. Different deployment types (backend-only vs full-stack) select different profile combinations.
 
-**Decision**: Tags are metadata labels for check-time filtering.
+**Alternative considered**: Per-service inline secret declarations. Rejected because it leads to duplication across services using the same provider.
 
-**Alternative considered**: Tags driving `extends` in generated TOML. Deferred—filtering is the immediate need.
+### Per-environment service profile selection
 
-### Null checkProvider defaults to secretspec's own resolution
+Services select which service profiles apply for each environment:
 
-When `checkProvider` is null, `sc check-secrets` runs `secretspec check --profile <p>` without `--provider`, letting secretspec resolve the provider from its global config or the TOML's `providers` field. This avoids hardcoding "onepassword" everywhere.
+```nix
+saas-controller.services.atlas3-dev-gateway = {
+  secretspec.environments = {
+    local = { serviceProfiles = [ "tailscale" "zuplo-public" ]; };
+    edge = { serviceProfiles = [ "zuplo-backend" "zuplo-public" ]; };
+    production = { serviceProfiles = [ "zuplo-backend" "zuplo-public" ]; };
+  };
+};
+```
 
-**Alternative considered**: Default to "onepassword". Rejected because it couples the nix module to a specific backend.
+**Rationale**: Tailscale secrets are only needed for local dev (`sc up`). Production deployments need provider API keys but not tailscale. Per-environment selection avoids false-positive check failures (e.g., requiring TS_CLIENT_SECRET in production).
 
-### Deprecation, not removal, of old scripts
+**Alternative considered**: Single list of service profiles for all environments. Rejected because it would require all secrets to be present in all environments.
 
-The three existing check scripts continue to work but print a deprecation notice pointing to `sc check-secrets`.
+### Dynamic TOML generation per service
 
-**Decision**: Soft deprecation. Scripts still function.
+For each service with `secretspec.environments` configured, generate a secretspec.toml at `.saas-controller/secretspec/<serviceName>/secretspec.toml` with one `[profiles.<envName>]` section per environment. Each section contains the union of secrets from that environment's service profiles.
+
+```toml
+# Generated: .saas-controller/secretspec/atlas3-dev-gateway/secretspec.toml
+[project]
+name = "atlas3-dev-gateway"
+revision = "1.0"
+
+[profiles.local]
+TS_CLIENT_SECRET = { description = "Tailscale OAuth client secret" }
+TS_CLIENT_ID = { description = "Tailscale OAuth client ID", required = false }
+SC_TAILNET = { description = "Tailnet MagicDNS suffix", required = false }
+ZUDOKU_PUBLIC_SERVER_URL = { description = "Public server URL for Zudoku" }
+
+[profiles.edge]
+ZUPLO_API_KEY = { description = "Zuplo API key for deployments" }
+ZUDOKU_PUBLIC_SERVER_URL = { description = "Public server URL for Zudoku" }
+
+[profiles.production]
+ZUPLO_API_KEY = { description = "Zuplo API key for deployments" }
+ZUDOKU_PUBLIC_SERVER_URL = { description = "Public server URL for Zudoku" }
+```
+
+Generation happens at check time (`sc check-secrets`), not at shell entry.
+
+**Rationale**: Dynamic generation avoids maintaining static TOML files that drift from the nix config. The `.saas-controller/secretspec/` directory is ephemeral (gitignored).
+
+### Tags for filtering only
+
+Tags on the service secretspec config filter which services `sc check-secrets` validates. They do not affect generation or composition.
+
+**Rationale**: Filtering is the immediate need. Composition is handled by service profiles.
 
 ## Risks / Trade-offs
 
-- **[Risk: Secrets check fails in CI without provider]** Services using 1Password require `OP_SERVICE_ACCOUNT_TOKEN` or biometric unlock. CI environments may not have these. → **Mitigation**: `sc check-secrets` exits cleanly with a warning when the provider is unavailable, rather than hard-failing. Individual services can set `checkProvider` to an available provider.
+- **[Risk: Breaking change for consumers using removed options]** Consumers referencing `secretspecContext`, `profileProviders`, etc. will get nix evaluation errors. → **Mitigation**: Document migration path. Willdan-dev already handles credentials externally so the code change is removing unused config. Other consumers need a one-time update to their CI.
 
-- **[Risk: Tag filtering is too coarse]** Tags are simple strings with AND semantics within `--tag`. No OR/NOT support. → **Mitigation**: Keep it simple for now. `--service <name>` provides precise targeting. Complex filtering can be added if needed.
+- **[Risk: Deploy tasks fail without credentials]** Removing `withControlPlaneSecrets` means deploy tasks no longer inject credentials. If a caller forgets to provide them, `npx zuplo deploy` fails with auth errors. → **Mitigation**: Clear error messages from the provider CLI (e.g., "ZUPLO_API_KEY not set"). Can add optional validation in deploy tasks that checks for required env vars and prints guidance.
 
-- **[Trade-off: No enterShell integration]** Secrets are not validated automatically when entering the devenv shell. Developers must explicitly run `sc check-secrets`. → **Rationale**: Automatic validation on shell entry would slow down the common case and may fail in environments without provider access. On-demand is the right default.
+- **[Trade-off: Service profiles are flat, not hierarchical]** No inheritance between service profiles (e.g., `zuplo-full` extending `zuplo-backend`). → **Rationale**: Keep it simple. A service just lists multiple profiles. Composition via list union is clear and predictable.
+
+- **[Trade-off: No enterShell or sc up pre-flight]** Checks are on-demand only. → **Rationale**: Automatic validation on shell entry slows the common case. Can be added as a follow-up.

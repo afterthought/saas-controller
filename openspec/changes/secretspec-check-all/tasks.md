@@ -1,25 +1,30 @@
-## 1. Test-Gateway SecretSpec TOML
+## 1. Remove Control Plane Secret Management
 
-- [ ] 1.1 Create `examples/test-gateway/secretspec.toml` with TS_CLIENT_SECRET (required), TS_CLIENT_ID (required=false), SC_TAILNET (required=false)
+- [ ] 1.1 Remove `secretspecContext`, `profileProviders`, `defaultProfileProvider`, `environmentProfiles`, `defaultSaasControllerProfile` options from `devenv.nix` (~lines 39-106)
+- [ ] 1.2 Remove `generateControllerSecretspecCmd` from `devenv.nix` `let` block (~lines 751-782)
+- [ ] 1.3 Remove `withControlPlaneSecrets`, `resolveSaasControllerProfile`, `resolveSaasControllerProvider` from `lib/helpers.nix` (~lines 8-33)
+- [ ] 1.4 Update deploy/hook task builders in `lib/helpers.nix` to remove secretspec wrapping — tasks run commands directly
+- [ ] 1.5 Remove `check-saas-controller-secrets`, `check-dev-saas-controller`, `check-prod-saas-controller` scripts from `devenv.nix` (~lines 1080-1192)
 
-## 2. Service Submodule Option
+## 2. Secret Profiles Option
 
-- [ ] 2.1 Add `secretspec` option to the service submodule in `devenv.nix` (~line 586, after `run` block) with fields: path, tags, profiles, checkProvider
-- [ ] 2.2 Update test-gateway service config in `devenv.nix` (~line 787) to include `secretspec = { tags = [ "tailscale" ]; profiles = [ "default" ]; }`
+- [ ] 2.1 Add `saas-controller.secretProfiles` controller-level option in `devenv.nix` — attrset of profile name to secret definitions (description, required, providers)
+- [ ] 2.2 Register default `tailscale` secret profile in `devenv.nix` with TS_CLIENT_SECRET (required), TS_CLIENT_ID (required=false), SC_TAILNET (required=false)
 
-## 3. Check-Secrets Helpers
+## 3. Per-Service SecretSpec Option
 
-- [ ] 3.1 Add `secretspecCheckTargets` helper in `devenv.nix` `let` block (~line 750) to collect enabled services with `secretspec != null`
-- [ ] 3.2 Add `mkServiceCheck` helper to generate bash snippet that runs `secretspec check` for each profile of a service, with optional `--provider` flag
+- [ ] 3.1 Add `secretspec` option to the service submodule in `devenv.nix` with fields: `environments` (attrset of env name to `{ serviceProfiles = [...]; }`), `tags` (list of strings), `checkProvider` (nullable string)
+- [ ] 3.2 Update test-gateway service config to use `secretspec.environments = { local = { serviceProfiles = [ "tailscale" ]; }; }`
 
-## 4. Unified sc-check-secrets Script
+## 4. Dynamic TOML Generation
 
-- [ ] 4.1 Add `sc-check-secrets` script in `devenv.nix` scripts block (~line 1080) that: generates controller TOML, checks controller profiles, iterates service targets, supports `--tag` and `--service` filtering, counts errors, prints summary
-- [ ] 4.2 Add `check-secrets` case to the `sc` command case statement (~line 1382)
-- [ ] 4.3 Update `sc help` text to include `check-secrets` command description
+- [ ] 4.1 Add `mkServiceSecretspecToml` helper in `devenv.nix` `let` block — given a service name and its secretspec config, generates TOML content by composing secrets from `secretProfiles` for each environment
+- [ ] 4.2 Add `generateAllServiceSecretspecs` helper that iterates enabled services with `secretspec != null` and writes each TOML to `.saas-controller/secretspec/<serviceName>/secretspec.toml`
 
-## 5. Deprecation
+## 5. Unified sc check-secrets Command
 
-- [ ] 5.1 Add deprecation notice to `check-saas-controller-secrets` script (~line 1082)
-- [ ] 5.2 Add deprecation notice to `check-dev-saas-controller` script (~line 1136)
-- [ ] 5.3 Add deprecation notice to `check-prod-saas-controller` script (~line 1166)
+- [ ] 5.1 Add `sc-check-secrets` script in `devenv.nix` scripts block that: calls `generateAllServiceSecretspecs`, iterates services, runs `secretspec check --profile <env>` (with optional `--provider`) for each environment, counts errors, prints summary
+- [ ] 5.2 Implement `--tag <tag>` filtering in `sc-check-secrets`
+- [ ] 5.3 Implement `--service <name>` filtering in `sc-check-secrets`
+- [ ] 5.4 Add `check-secrets` case to the `sc` command case statement (~line 1382)
+- [ ] 5.5 Update `sc help` text to include `check-secrets` command
