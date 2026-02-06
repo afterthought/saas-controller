@@ -783,6 +783,21 @@ in
 
     in
     {
+      # Test service configuration (for local development/testing of the module)
+      saas-controller.services.test-gateway = {
+        enable = true;
+        displayName = "Test Gateway";
+        provider = "zuplo";
+        providerConfig = {
+          project = "test-gateway";
+          account = "test";
+          path = "examples/test-gateway";
+        };
+        environments = {
+          local.enable = true;
+        };
+      };
+
       # Runtime assertions for provider validation
       assertions = lib.flatten [
         # Validate service providers
@@ -1212,6 +1227,46 @@ in
                           up)
                             # Default environment for 'up' is 'local'
                             ENVIRONMENT="''${ENVIRONMENT:-local}"
+
+                            # --- Hostname derivation ---
+                            if [ -n "''${VK_WORKSPACE_ID:-}" ]; then
+                              SC_SLUG="''${VK_WORKSPACE_ID:0:8}"
+                            else
+                              SC_SLUG="local"
+                            fi
+                            export SC_SLUG
+
+                            # --- Tailnet discovery ---
+                            # SC_TAILNET can be set explicitly, or read from host tailscale if installed.
+                            if [ -z "''${SC_TAILNET:-}" ]; then
+                              if tailscale status --json >/dev/null 2>&1; then
+                                SC_TAILNET="$(tailscale status --json | ${pkgs.jq}/bin/jq -r '.MagicDNSSuffix')"
+                              fi
+                            fi
+                            if [ -z "''${SC_TAILNET:-}" ]; then
+                              echo "❌ Error: Cannot determine tailnet." >&2
+                              echo "  Set SC_TAILNET to your tailnet MagicDNS suffix, e.g.:" >&2
+                              echo "    export SC_TAILNET=your-tailnet.ts.net" >&2
+                              echo "  Or install Tailscale on the host for auto-detection." >&2
+                              exit 1
+                            fi
+                            export SC_TAILNET
+
+                            echo "Tailscale: tailnet=$SC_TAILNET slug=$SC_SLUG"
+
+                            # --- Tailscale credentials ---
+                            # TS_CLIENT_SECRET must be set in the environment.
+                            # It is injected by SecretSpec from 1Password when running
+                            # inside the devenv shell (stored alongside control plane creds).
+                            if [ -z "''${TS_CLIENT_SECRET:-}" ]; then
+                              echo "❌ Error: TS_CLIENT_SECRET not set." >&2
+                              echo "  Add TS_CLIENT_SECRET and TS_CLIENT_ID to your SecretSpec" >&2
+                              echo "  configuration in 1Password (same vault as control plane creds)." >&2
+                              echo "  Then re-enter the devenv shell so SecretSpec injects them." >&2
+                              exit 1
+                            fi
+                            export TS_CLIENT_SECRET
+                            export TS_CLIENT_ID="''${TS_CLIENT_ID:-}"
 
                             # Collect compose dirs for cleanup
                             COMPOSE_DIRS=()

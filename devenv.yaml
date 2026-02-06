@@ -1,0 +1,6 @@
+# Devenv configuration for testing the saas-controller module
+inputs:
+  nixpkgs:
+    url: github:cachix/devenv-nixpkgs/538a5124359f0b3d466e1160378c87887e3b51a4
+
+allowUnfree: true

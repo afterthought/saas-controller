@@ -1,0 +1,16 @@
+{
+  "name": "test-gateway",
+  "version": "1.0.0",
+  "description": "Test gateway for sc up verification",
+  "private": true,
+  "scripts": {
+    "dev": "zuplo dev --port 3000 --start-docs false --start-editor false",
+    "docs": "zuplo docs --port 3001"
+  },
+  "dependencies": {
+    "@zuplo/core": "^0.53.0"
+  },
+  "devDependencies": {
+    "zuplo": "^2.11.0"
+  }
+}

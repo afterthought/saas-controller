@@ -26,6 +26,10 @@
       COMPOSE_DIR="${composeDir}"
       mkdir -p "$COMPOSE_DIR"
 
+      # Compute tailscale hostname and FQDN
+      TS_HOSTNAME="sc-''${SC_SLUG}-${serviceName}"
+      FQDN="''${TS_HOSTNAME}.''${SC_TAILNET}"
+
       # Generate Dockerfile
       cat > "$COMPOSE_DIR/Dockerfile" <<'DOCKERFILE'
       FROM node:22
@@ -33,23 +37,61 @@
       CMD ["node", "server.mjs"]
       DOCKERFILE
 
-      # Generate docker-compose.yml
+      # Generate serve-config.json for tailscale HTTPS routing
+      cat > "$COMPOSE_DIR/serve-config.json" <<SERVECONFIG
+      {
+        "TCP": {
+          "443": { "HTTPS": true }
+        },
+        "Web": {
+          "$TS_HOSTNAME:443": {
+            "Handlers": { "/": { "Proxy": "http://127.0.0.1:3000" } }
+          }
+        }
+      }
+      SERVECONFIG
+
+      # Generate docker-compose.yml with tailscale sidecar
       cat > "$COMPOSE_DIR/docker-compose.yml" <<COMPOSEFILE
       services:
+        tailscale:
+          image: tailscale/tailscale:latest
+          hostname: $TS_HOSTNAME
+          environment:
+            - TS_HOSTNAME=$TS_HOSTNAME
+            - TS_AUTHKEY=\''${TS_CLIENT_SECRET}?ephemeral=true
+            - TS_SERVE_CONFIG=/config/serve.json
+            - TS_STATE_DIR=/var/lib/tailscale
+            - TS_USERSPACE=false
+          volumes:
+            - ./serve-config.json:/config/serve.json:ro
+            - ts-state:/var/lib/tailscale
+          cap_add:
+            - NET_ADMIN
+          devices:
+            - /dev/net/tun:/dev/net/tun
+          healthcheck:
+            test: ["CMD", "tailscale", "status"]
+            interval: 2s
+            timeout: 5s
+            retries: 10
+
         ${serviceName}:
           build:
             context: .
             dockerfile: Dockerfile
+          network_mode: service:tailscale
+          depends_on:
+            tailscale:
+              condition: service_healthy
           volumes:
             - ${sourceDir}:/app
-          ports:
-            - "3000:3000"
           environment:
             - PORT=3000
-      COMPOSEFILE
 
-      export DEVSERVER_URL="http://localhost:3000"
-      echo "DEVSERVER_URL: $DEVSERVER_URL"
+      volumes:
+        ts-state:
+      COMPOSEFILE
 
       # Cleanup on exit
       cleanup() {
@@ -58,8 +100,15 @@
       }
       trap cleanup EXIT INT TERM
 
-      # Start compose stack in foreground
-      docker compose -f "$COMPOSE_DIR/docker-compose.yml" up --build
+      # Start compose stack detached, wait for healthchecks
+      docker compose -f "$COMPOSE_DIR/docker-compose.yml" up -d --build --wait
+
+      # Print HTTPS URL
+      export DEVSERVER_URL="https://''${FQDN}:443"
+      echo "DEVSERVER_URL: $DEVSERVER_URL"
+
+      # Stream logs in foreground
+      docker compose -f "$COMPOSE_DIR/docker-compose.yml" logs -f
     '';
 
   provisionProject = serviceName: service: ''

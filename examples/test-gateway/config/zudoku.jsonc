@@ -1,0 +1,7 @@
+{
+  // Zudoku docs configuration
+  "enableAuthentication": false,
+  "docs": {
+    "files": "/config/*.oas.json"
+  }
+}

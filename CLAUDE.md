@@ -4,13 +4,13 @@ Multi-cloud service orchestration with runtime + network provider abstraction fo
 
 ## Architecture
 
-Three independent axes:
+Provider-owned lifecycle — each provider generates its own docker-compose stack:
 
-- **Providers** (WHAT): Cloud platform adapters (zuplo, frontegg, datadog, secretspec)
-- **Runtimes** (HOW): Process lifecycle managers (dev-manager-mcp, docker-compose, launchd)
-- **Networks** (WHERE): URL exposure strategies (tailscale, localhost)
+- **Providers** (WHAT): Cloud platform adapters (zuplo, frontegg, datadog, secretspec, hello-world)
+- **`sc up`**: Derives tailscale hostname from `VK_WORKSPACE_ID`, starts provider compose stacks with tailscale sidecar for HTTPS on the tailnet
+- **`sc deploy`**: Task-based deployment with pre/post hooks
 
-The dispatcher in `lib/helpers.nix` resolves the runtime + network for each service, then calls `runtime.mkScript` with network snippets injected.
+Task helpers in `lib/helpers.nix` orchestrate the deploy pipeline.
 
 ## Key Files
 
@@ -24,20 +24,17 @@ providers/*.nix         # Cloud providers
 scripts/*.mjs           # Helper scripts (frontegg registration)
 ```
 
-## How dev-serve Works
+## How sc up Works
 
-1. `devenv.nix` iterates enabled services with `local` environment
-2. For each service variant (e.g., api, docs), calls `helpers.mkDevServeScript`
-3. `mkDevServeScript` resolves runtime (per-service or default) and network
-4. Runtime's `mkScript` receives network snippets as bash strings
-5. Generated script: start process -> set $PORT -> networkSetup -> networkPrintUrl -> tail logs -> networkCleanup on exit
-
-## Config Resolution
-
-```
-service.runtime (per-service) ?? config.saas-controller.defaultRuntime -> runtimes.${name}
-service.network (per-service) ?? config.saas-controller.defaultNetwork -> networks.${name}
-```
+1. `sc up` derives hostname slug from `VK_WORKSPACE_ID` and reads tailnet suffix (`SC_TAILNET` or host auto-detect)
+2. Checks `TS_CLIENT_SECRET` is set
+3. For each enabled service with `local` environment and `up()`, runs provider's `up()` in parallel
+4. Provider `up()` generates compose stack (Dockerfile, docker-compose.yml, serve-config.json) in `.saas-controller/compose/<serviceName>/`
+5. Compose stack includes tailscale sidecar + app containers sharing its network namespace
+6. `docker compose up -d --wait` starts detached and waits for tailscale healthcheck
+7. Prints HTTPS URLs (`https://<hostname>.<tailnet>:443`) after healthcheck passes
+8. Streams logs with `docker compose logs -f`
+9. Trap handler runs `docker compose down` on exit (ephemeral tailscale nodes auto-remove)
 
 ## Extending
 
@@ -76,11 +73,62 @@ Task chain: `saas-pre-deploy` -> `saas-deploy` -> `saas-post-deploy`
 
 - **Control plane**: SaaS controller credentials (ZUPLO_API_KEY, FRONTEGG_*) via `environmentProfiles`
 - **Data plane**: Service runtime secrets via `run.secretSource`
+- **Tailscale**: OAuth client credentials (TS_CLIENT_ID, TS_CLIENT_SECRET) for ephemeral node creation
+
+## Tailscale Setup (One-Time)
+
+`sc up` uses tailscale sidecar containers to give each worktree unique HTTPS URLs on the tailnet. This requires one-time setup:
+
+### 1. Configure ACL tag
+
+In the [Tailscale admin console](https://login.tailscale.com/admin/acls), switch to the JSON policy editor and add a `tagOwners` entry:
+
+```json
+"tagOwners": {
+  "tag:sc-dev": ["autogroup:admin"]
+}
+```
+
+This declares the tag so OAuth clients can use it. Your existing ACL rules handle network access. If your policy uses the default `"*"` → `"*:*"` rule, also add a rule for tagged nodes (tags opt out of the default member group):
+
+```json
+{ "action": "accept", "src": ["autogroup:member"], "dst": ["tag:sc-dev:*"] }
+```
+
+### 2. Create OAuth client
+
+In the [Tailscale admin console](https://login.tailscale.com/admin/settings/oauth):
+
+1. Click **Generate OAuth client** (under "Trust credentials")
+2. Add the **`auth_keys`** scope (Write)
+3. Select **`tag:sc-dev`** as the tag (available after step 1)
+4. Generate and copy both the **Client ID** and **Client Secret**
+
+The OAuth client generates and auto-renews auth keys — they never expire. The tag is assigned to nodes automatically by the OAuth client; the sidecar doesn't need to advertise it.
+
+### 3. Store credentials and set environment
+
+Add to your environment (via SecretSpec, `.env`, or shell export):
+
+- `TS_CLIENT_SECRET` — the OAuth client secret (required)
+- `TS_CLIENT_ID` — the OAuth client ID (optional)
+- `SC_TAILNET` — your tailnet MagicDNS suffix, e.g. `my-tailnet.ts.net` (auto-detected if host tailscale is installed)
+
+### How it works
+
+- `sc up` reads `VK_WORKSPACE_ID` (first 8 chars → slug, fallback: `local`)
+- Reads tailnet suffix from `SC_TAILNET` env var or host tailscale (if installed)
+- Each provider generates a compose stack with a `tailscale/tailscale:latest` sidecar
+- The sidecar container joins the tailnet as an ephemeral node (host tailscale NOT required)
+- App containers share the sidecar's network namespace (`network_mode: service:tailscale`)
+- Tailscale serve provides HTTPS with valid certs on the tailnet
+- Hostname pattern: `sc-<slug>-<serviceName>.<tailnet>`
+- Ephemeral nodes auto-remove when containers stop
 
 ## Common Operations
 
 ```bash
-sc up                              # Start all local services
+sc up                              # Start all local services (requires tailscale)
 sc deploy my-service -e edge       # Deploy with hooks
 provision-projects                 # One-time setup
 check-saas-controller-secrets      # Validate credentials
