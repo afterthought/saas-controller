@@ -17,19 +17,24 @@
       TS_HOSTNAME="sc-''${SC_SLUG}-${serviceName}"
       FQDN="''${TS_HOSTNAME}.''${SC_TAILNET}"
 
-      # Copy package.json and lockfile into compose context for Dockerfile COPY
+      # Copy all package.json files (root + workspaces) and lockfile into compose context
       cp "${sourceDir}/package.json" "$COMPOSE_DIR/package.json"
       cp "${sourceDir}/package-lock.json" "$COMPOSE_DIR/package-lock.json" 2>/dev/null \
         || cp "${sourceDir}/npm-shrinkwrap.json" "$COMPOSE_DIR/package-lock.json" 2>/dev/null \
         || true
+      # Copy workspace package.json files (e.g. docs/) preserving directory structure
+      (cd "${sourceDir}" && find . -mindepth 2 -name package.json -not -path '*/node_modules/*' -exec sh -c '
+        mkdir -p "'"$COMPOSE_DIR"'/$(dirname "$1")"
+        cp "$1" "'"$COMPOSE_DIR"'/$1"
+      ' _ {} \;)
 
       # Generate Dockerfile (shared by both services)
-      # Installs dependencies at build time so they live in the image layer.
+      # Installs all workspace dependencies at build time.
       cat > "$COMPOSE_DIR/Dockerfile" <<'DOCKERFILE'
       FROM node:22
       WORKDIR /app
-      COPY package.json package-lock.json* ./
-      RUN npm ci || npm install
+      COPY . .
+      RUN npm install
       DOCKERFILE
 
       # Generate serve-config.json for tailscale HTTPS routing
