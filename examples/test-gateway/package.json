@@ -1,16 +1,21 @@
 {
-  "name": "test-gateway",
-  "version": "1.0.0",
-  "description": "Test gateway for sc up verification",
+  "name": "my-api",
+  "version": "0.1.0",
+  "type": "module",
   "private": true,
   "scripts": {
-    "dev": "zuplo dev --port 3000 --start-docs false --start-editor false",
-    "docs": "zuplo docs --port 3001"
+    "dev": "zuplo dev",
+    "test": "zuplo test",
+    "docs": "zuplo docs"
   },
   "dependencies": {
-    "@zuplo/core": "^0.53.0"
+    "zuplo": "^6"
   },
   "devDependencies": {
-    "zuplo": "^2.11.0"
-  }
+    "@types/node": "^22",
+    "typescript": "^5"
+  },
+  "workspaces": [
+    "docs"
+  ]
 }
