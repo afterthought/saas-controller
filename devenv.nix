@@ -865,6 +865,7 @@ SECRETSPEC_EOF
             local = { serviceProfiles = [ "tailscale" ]; };
           };
           tags = [ "tailscale" ];
+          checkProvider = "env";
         };
       };
 
