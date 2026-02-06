@@ -60,9 +60,9 @@ in
       }));
       default = {
         tailscale = {
-          TS_CLIENT_SECRET = { description = "Tailscale OAuth client secret for ephemeral node creation"; };
-          TS_CLIENT_ID = { description = "Tailscale OAuth client ID"; required = false; };
-          SC_TAILNET = { description = "Tailnet MagicDNS suffix, e.g. my-tailnet.ts.net (auto-detected if host tailscale installed)"; required = false; };
+          TS_CLIENT_SECRET = { description = "Tailscale OAuth client secret for ephemeral node creation"; providers = [ "onepassword://madswan@willdan-corp" ]; };
+          TS_CLIENT_ID = { description = "Tailscale OAuth client ID"; required = false; providers = [ "onepassword://madswan@willdan-corp" ]; };
+          SC_TAILNET = { description = "Tailnet MagicDNS suffix, e.g. my-tailnet.ts.net (auto-detected if host tailscale installed)"; required = false; providers = [ "onepassword://madswan@willdan-corp" ]; };
         };
       };
       description = ''
@@ -598,18 +598,13 @@ in
                   description = "Tags for filtering: sc check-secrets --tag tailscale";
                   example = [ "tailscale" "backend" ];
                 };
-
-                checkProvider = lib.mkOption {
-                  type = lib.types.nullOr lib.types.str;
-                  default = null;
-                  description = "Secretspec provider for checks. If null, uses secretspec's own default resolution.";
-                };
               };
             });
             default = null;
             description = ''
               Per-service secretspec configuration. When non-null, service participates in sc check-secrets.
               Defines which secret profiles are required per environment.
+              Provider resolution uses the per-secret `providers` field from secretProfiles.
             '';
           };
 
@@ -865,7 +860,6 @@ SECRETSPEC_EOF
             local = { serviceProfiles = [ "tailscale" ]; };
           };
           tags = [ "tailscale" ];
-          checkProvider = "env";
         };
       };
 
@@ -1179,9 +1173,6 @@ SECRETSPEC_EOF
               let
                 secretspecCfg = service.secretspec;
                 tags = secretspecCfg.tags;
-                providerFlag = if secretspecCfg.checkProvider != null
-                  then "--provider ${secretspecCfg.checkProvider} "
-                  else "";
               in ''
                 # Filter by service name
                 if [ -n "$FILTER_SERVICE" ] && [ "$FILTER_SERVICE" != "${serviceName}" ]; then
@@ -1197,7 +1188,7 @@ SECRETSPEC_EOF
 
                   ${lib.concatStringsSep "\n" (lib.mapAttrsToList (envName: envCfg: ''
                     TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
-                    if ${pkgs.secretspec}/bin/secretspec check ${providerFlag}--profile ${envName} 2>&1; then
+                    if ${pkgs.secretspec}/bin/secretspec check --profile ${envName} 2>&1; then
                       echo "  ✅ ${serviceName}/${envName}: OK"
                       SUMMARY="$SUMMARY\n  ✅ ${serviceName}/${envName}"
                     else
