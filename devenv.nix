@@ -1277,6 +1277,32 @@ SECRETSPEC_EOF
                             # Default environment for 'up' is 'local'
                             ENVIRONMENT="''${ENVIRONMENT:-local}"
 
+                            # --- Generate secretspec TOMLs and inject secrets ---
+                            ${generateAllServiceSecretspecs}
+
+                            # If a specific service is targeted, use its secretspec
+                            # Otherwise use the first service's secretspec (they share the tailscale profile)
+                            SC_SECRETSPEC_DIR=""
+                            if [ -n "$SERVICE" ]; then
+                              SC_SECRETSPEC_DIR="${config.git.root}/.saas-controller/secretspec/$SERVICE"
+                            else
+                              # Use first available service secretspec
+                              ${lib.concatStringsSep "\n" (lib.mapAttrsToList (serviceName: service:
+                                lib.optionalString (service.secretspec != null) ''
+                                  if [ -z "$SC_SECRETSPEC_DIR" ] && [ -d "${config.git.root}/.saas-controller/secretspec/${serviceName}" ]; then
+                                    SC_SECRETSPEC_DIR="${config.git.root}/.saas-controller/secretspec/${serviceName}"
+                                  fi
+                                ''
+                              ) enabledServices)}
+                            fi
+
+                            # If we have a secretspec, re-exec under secretspec run to inject secrets
+                            if [ -n "$SC_SECRETSPEC_DIR" ] && [ -f "$SC_SECRETSPEC_DIR/secretspec.toml" ] && [ -z "''${__SC_SECRETS_INJECTED:-}" ]; then
+                              export __SC_SECRETS_INJECTED=1
+                              cd "$SC_SECRETSPEC_DIR"
+                              exec ${pkgs.secretspec}/bin/secretspec run --profile "$ENVIRONMENT" -- "$0" up $SERVICE ''${ENVIRONMENT:+--environment $ENVIRONMENT}
+                            fi
+
                             # --- Hostname derivation ---
                             if [ -n "''${VK_WORKSPACE_ID:-}" ]; then
                               SC_SLUG="''${VK_WORKSPACE_ID:0:8}"
@@ -1304,14 +1330,11 @@ SECRETSPEC_EOF
                             echo "Tailscale: tailnet=$SC_TAILNET slug=$SC_SLUG"
 
                             # --- Tailscale credentials ---
-                            # TS_CLIENT_SECRET must be set in the environment.
-                            # It is injected by SecretSpec from 1Password when running
-                            # inside the devenv shell (stored alongside control plane creds).
+                            # Injected by secretspec run above. Check they're set.
                             if [ -z "''${TS_CLIENT_SECRET:-}" ]; then
                               echo "❌ Error: TS_CLIENT_SECRET not set." >&2
-                              echo "  Add TS_CLIENT_SECRET and TS_CLIENT_ID to your SecretSpec" >&2
-                              echo "  configuration in 1Password (same vault as control plane creds)." >&2
-                              echo "  Then re-enter the devenv shell so SecretSpec injects them." >&2
+                              echo "  Ensure the secret exists in 1Password under the saas-controller provider alias." >&2
+                              echo "  Run 'sc check-secrets' to diagnose." >&2
                               exit 1
                             fi
                             export TS_CLIENT_SECRET
