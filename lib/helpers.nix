@@ -5,33 +5,6 @@ let
   getEnabledEnvironments = service:
     lib.filterAttrs (_: env: env.enable) service.environments;
 
-  # Resolve environment name to saas-controller profile
-  # Returns the profile name to use for a given environment (e.g., "production" -> "prod-saas-controller")
-  resolveSaasControllerProfile = envName:
-    config.saas-controller.environmentProfiles.${envName} or config.saas-controller.defaultSaasControllerProfile;
-
-  # Resolve saas-controller profile to secretspec provider
-  # Returns the provider name to use for a given profile (e.g., "prod-saas-controller" -> "onepassword")
-  resolveSaasControllerProvider = profileName:
-    config.saas-controller.profileProviders.${profileName} or config.saas-controller.defaultProfileProvider;
-
-  # Wrap a command with stack-specific secretspec context (control plane credentials)
-  # This provides ZUPLO_API_KEY, FRONTEGG_CLIENT_ID, FRONTEGG_API_KEY, etc.
-  # Args:
-  #   stackPath: Path to the stack directory (e.g., "stacks/atlas3-dev-gateway")
-  #   command: Raw bash command to wrap
-  # Returns: Wrapped command that runs from stack directory with control plane secrets
-  # Uses runtime variables $SAAS_PROVIDER and $SAAS_PROFILE set earlier in task
-  withControlPlaneSecrets = stackPath: command: ''
-    cd ${config.git.root}/${stackPath}
-    ${pkgs.secretspec}/bin/secretspec run \
-      --provider "$SAAS_PROVIDER" \
-      --profile "$SAAS_PROFILE" -- bash -c ${lib.escapeShellArg "set -e; ${command}"} || {
-        echo "  ❌ secretspec run failed (exit code: $?)"
-        exit 1
-      }
-  '';
-
   # Run hooks for a service (pre-deploy or post-deploy)
   # Orchestrates all hooks (secretspec, frontegg, datadog) in order
   # Args:
@@ -40,7 +13,7 @@ let
   #   hooks: List of hook configurations
   #   hookPhase: "pre" or "post" (for logging)
   #   environment: Runtime environment name
-  # Returns: Bash script that runs all hooks with control plane secrets
+  # Returns: Bash script that runs all hooks
   runHooks = serviceName: service: hooks: hookPhase: environment:
     let
       envConfig = service.environments.${environment} or { };
@@ -65,10 +38,15 @@ let
           hookType = hookConfig.type;
           hookProvider = providers.${hookType};
           servicePath = service.providerConfig.path;
+          hookCmd = hookProvider.provision serviceName hookConfig.config servicePath environment service;
         in ''
           echo ""
           echo "  [${toString (index + 1)}/${toString (builtins.length hooks)}] Running ${hookType} hook..."
-          ${withControlPlaneSecrets "stacks/${serviceName}" (hookProvider.provision serviceName hookConfig.config servicePath environment service)}
+          cd ${config.git.root}/stacks/${serviceName}
+          bash -c ${lib.escapeShellArg "set -e; ${hookCmd}"} || {
+            echo "  ❌ hook failed (exit code: $?)"
+            exit 1
+          }
         ''
       ) hooks)}
 
@@ -102,38 +80,18 @@ in
 
           echo "🔐 Exporting secrets: ${exportName} → $ENV"
 
-          # Resolve saas-controller profile and provider for this environment
-          ${lib.concatStringsSep "\n          " (lib.mapAttrsToList (envName: _:
-            let
-              profile = resolveSaasControllerProfile envName;
-              providerName = resolveSaasControllerProvider profile;
-            in ''
-              if [ "$ENV" = "${envName}" ]; then
-                SAAS_PROFILE="${profile}"
-                SAAS_PROVIDER="${providerName}"
-              fi
-            ''
-          ) config.saas-controller.environmentProfiles)}
-
-          # Fallback to defaults if environment not mapped
-          SAAS_PROFILE="''${SAAS_PROFILE:-${config.saas-controller.defaultSaasControllerProfile}}"
-          SAAS_PROVIDER="''${SAAS_PROVIDER:-${config.saas-controller.defaultProfileProvider}}"
-
-          echo "  🔑 Using saas-controller profile: $SAAS_PROFILE (provider: $SAAS_PROVIDER)"
-
-          # Select environment config and wrap with control plane secrets
+          # Run export for the matching environment
           ${lib.concatStringsSep "\n          " (lib.mapAttrsToList (envName: envConfig:
             let
-              profile = resolveSaasControllerProfile envName;
-              providerName = resolveSaasControllerProvider profile;
-
-              # Get raw command from provider
-              rawCommand = provider.deploy exportName exportConfig envName envConfig profile providerName;
-
-              # Wrap with control plane secrets
+              # Get raw command from provider — credentials must be in the environment
+              rawCommand = provider.deploy exportName exportConfig envName envConfig envName "env";
             in ''
               if [ "$ENV" = "${envName}" ]; then
-                ${withControlPlaneSecrets "stacks/${exportName}" rawCommand}
+                cd ${config.git.root}/stacks/${exportName}
+                bash -c ${lib.escapeShellArg "set -e; ${rawCommand}"} || {
+                  echo "  ❌ Export failed (exit code: $?)"
+                  exit 1
+                }
               fi
             ''
           ) (getEnabledEnvironments exportConfig))}
@@ -145,9 +103,7 @@ in
             "environment": "$ENV",
             "status": "success",
             "action": "secret-export",
-            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "saas_profile": "$SAAS_PROFILE",
-            "saas_provider": "$SAAS_PROVIDER"
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
           EOF
 
@@ -184,25 +140,6 @@ in
 
           echo "⚡ Pre-deploy hooks: ${serviceName} → $ENV"
 
-          # Resolve saas-controller profile and provider for this environment
-          ${lib.concatStringsSep "\n          " (lib.mapAttrsToList (envName: _:
-            let
-              profile = resolveSaasControllerProfile envName;
-              providerName = resolveSaasControllerProvider profile;
-            in ''
-              if [ "$ENV" = "${envName}" ]; then
-                SAAS_PROFILE="${profile}"
-                SAAS_PROVIDER="${providerName}"
-              fi
-            ''
-          ) config.saas-controller.environmentProfiles)}
-
-          # Fallback to defaults if environment not mapped
-          SAAS_PROFILE="''${SAAS_PROFILE:-${config.saas-controller.defaultSaasControllerProfile}}"
-          SAAS_PROVIDER="''${SAAS_PROVIDER:-${config.saas-controller.defaultProfileProvider}}"
-
-          echo "  🔑 Using saas-controller profile: $SAAS_PROFILE (provider: $SAAS_PROVIDER)"
-
           # Run pre-deploy hooks for the matching environment
           ${lib.concatStringsSep "\n          " (lib.mapAttrsToList (envName: envConfig: ''
             if [ "$ENV" = "${envName}" ]; then
@@ -223,9 +160,7 @@ in
             "environment": "$ENV",
             "status": "success",
             "action": "pre-deploy",
-            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "saas_profile": "$SAAS_PROFILE",
-            "saas_provider": "$SAAS_PROVIDER"
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
           EOF
 
@@ -262,45 +197,21 @@ in
 
           echo "🚀 Deploying: ${serviceName} → $ENV"
 
-          # Resolve saas-controller profile and provider for this environment
-          ${lib.concatStringsSep "\n          " (lib.mapAttrsToList (envName: _:
-            let
-              profile = resolveSaasControllerProfile envName;
-              providerName = resolveSaasControllerProvider profile;
-            in ''
-              if [ "$ENV" = "${envName}" ]; then
-                SAAS_PROFILE="${profile}"
-                SAAS_PROVIDER="${providerName}"
-              fi
-            ''
-          ) config.saas-controller.environmentProfiles)}
-
-          # Fallback to defaults if environment not mapped
-          SAAS_PROFILE="''${SAAS_PROFILE:-${config.saas-controller.defaultSaasControllerProfile}}"
-          SAAS_PROVIDER="''${SAAS_PROVIDER:-${config.saas-controller.defaultProfileProvider}}"
-
-          echo "  🔑 Using saas-controller profile: $SAAS_PROFILE (provider: $SAAS_PROVIDER)"
-
-          # Select environment config and wrap with control plane secrets
+          # Run deployment for the matching environment — credentials must be in the environment
           ${lib.concatStringsSep "\n          " (lib.mapAttrsToList (envName: envConfig:
             let
-              profile = resolveSaasControllerProfile envName;
-              providerName = resolveSaasControllerProvider profile;
-
               # Get raw command from provider
-              rawCommand = provider.deploy serviceName service envName envConfig profile providerName;
-
-              # Wrap with control plane secrets (ZUPLO_API_KEY, FRONTEGG_*, etc.)
-              # Runs secretspec from the stack directory (stacks/${serviceName})
+              rawCommand = provider.deploy serviceName service envName envConfig envName "env";
             in ''
               if [ "$ENV" = "${envName}" ]; then
                 (
-                  ${withControlPlaneSecrets "stacks/${serviceName}" rawCommand}
-                ) || {
-                  echo ""
-                  echo "❌ Deployment failed for ${serviceName} in environment $ENV"
-                  exit 1
-                }
+                  cd ${config.git.root}/stacks/${serviceName}
+                  bash -c ${lib.escapeShellArg "set -e; ${rawCommand}"} || {
+                    echo ""
+                    echo "❌ Deployment failed for ${serviceName} in environment $ENV"
+                    exit 1
+                  }
+                )
               fi
             ''
           ) (getEnabledEnvironments service))}
@@ -315,8 +226,6 @@ in
               --arg env "$ENV" \
               --arg action "deploy" \
               --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-              --arg saas_profile "$SAAS_PROFILE" \
-              --arg saas_provider "$SAAS_PROVIDER" \
               --argjson provider_data "$(cat "$PROVIDER_OUTPUT_FILE")" \
               '{
                 service: $service,
@@ -324,8 +233,6 @@ in
                 status: "success",
                 action: $action,
                 timestamp: $timestamp,
-                saas_profile: $saas_profile,
-                saas_provider: $saas_provider,
                 outputs: $provider_data.outputs
               }' > "$DEVENV_TASK_OUTPUT_FILE"
           else
@@ -336,9 +243,7 @@ in
             "environment": "$ENV",
             "status": "success",
             "action": "deploy",
-            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "saas_profile": "$SAAS_PROFILE",
-            "saas_provider": "$SAAS_PROVIDER"
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
           EOF
           fi
@@ -373,25 +278,6 @@ in
 
           echo "⚡ Post-deploy hooks: ${serviceName} → $ENV"
 
-          # Resolve saas-controller profile and provider for this environment
-          ${lib.concatStringsSep "\n          " (lib.mapAttrsToList (envName: _:
-            let
-              profile = resolveSaasControllerProfile envName;
-              providerName = resolveSaasControllerProvider profile;
-            in ''
-              if [ "$ENV" = "${envName}" ]; then
-                SAAS_PROFILE="${profile}"
-                SAAS_PROVIDER="${providerName}"
-              fi
-            ''
-          ) config.saas-controller.environmentProfiles)}
-
-          # Fallback to defaults if environment not mapped
-          SAAS_PROFILE="''${SAAS_PROFILE:-${config.saas-controller.defaultSaasControllerProfile}}"
-          SAAS_PROVIDER="''${SAAS_PROVIDER:-${config.saas-controller.defaultProfileProvider}}"
-
-          echo "  🔑 Using saas-controller profile: $SAAS_PROFILE (provider: $SAAS_PROVIDER)"
-
           # Run post-deploy hooks for the matching environment
           ${lib.concatStringsSep "\n          " (lib.mapAttrsToList (envName: envConfig: ''
             if [ "$ENV" = "${envName}" ]; then
@@ -412,9 +298,7 @@ in
             "environment": "$ENV",
             "status": "success",
             "action": "post-deploy",
-            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "saas_profile": "$SAAS_PROFILE",
-            "saas_provider": "$SAAS_PROVIDER"
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
           EOF
 

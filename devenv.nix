@@ -36,72 +36,53 @@ in
 {
   # Controller-level options
   options.saas-controller = {
-    # SecretSpec context: Shared TOML files for controller operations
-    secretspecContext = lib.mkOption {
-      type = lib.types.listOf lib.types.str;
-      default = [ ];
-      description = ''
-        List of SecretSpec TOML file paths to import for controller context.
-        These provide the secrets needed BY the controller (e.g., Zuplo API keys, Frontegg credentials).
-        The files are merged in order, with later files taking precedence.
-      '';
-      example = [
-        "shared/secrets/zuplo/secretspec.toml"
-        "shared/secrets/saas-controller/secretspec.toml"
-      ];
-    };
+    # Secret profiles: Named sets of secrets composable per-service per-environment
+    secretProfiles = lib.mkOption {
+      type = lib.types.attrsOf (lib.types.attrsOf (lib.types.submodule {
+        options = {
+          description = lib.mkOption {
+            type = lib.types.str;
+            description = "Human-readable description of this secret";
+          };
 
-    # Profile → Provider mapping: Which secretspec provider stores each profile's credentials
-    profileProviders = lib.mkOption {
-      type = lib.types.attrsOf lib.types.str;
+          required = lib.mkOption {
+            type = lib.types.bool;
+            default = true;
+            description = "Whether this secret is required (default: true)";
+          };
+
+          providers = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [ ];
+            description = "List of secretspec providers that can supply this secret";
+          };
+        };
+      }));
       default = {
-        dev-saas-controller = "onepassword://Github-Actions";
-        prod-saas-controller = "onepassword://Github-Actions";
+        tailscale = {
+          TS_CLIENT_SECRET = { description = "Tailscale OAuth client secret for ephemeral node creation"; };
+          TS_CLIENT_ID = { description = "Tailscale OAuth client ID"; required = false; };
+          SC_TAILNET = { description = "Tailnet MagicDNS suffix, e.g. my-tailnet.ts.net (auto-detected if host tailscale installed)"; required = false; };
+        };
       };
       description = ''
-        Mapping of saas-controller profile names to secretspec provider names.
-        Determines which secret storage provider to use when reading control plane credentials.
-      '';
-      example = {
-        dev-saas-controller = "onepassword";
-        prod-saas-controller = "1password-cli";
-      };
-    };
+        Named secret profiles defined at the controller level.
+        Each profile maps secret names to their definitions (description, required, providers).
+        Services reference these profiles in their secretspec.environments configuration.
 
-    defaultProfileProvider = lib.mkOption {
-      type = lib.types.str;
-      default = "onepassword://Github-Actions";
-      description = ''
-        Default secretspec provider to use for saas-controller profiles not explicitly mapped.
+        Providers can register default profiles (e.g., zuplo.nix adding "zuplo-backend").
+        Consumers can extend or override profiles using standard nix merging (lib.mkMerge, lib.mkForce).
       '';
-    };
-
-    # Environment → Profile mapping: Which profile to use for each environment
-    environmentProfiles = lib.mkOption {
-      type = lib.types.attrsOf lib.types.str;
-      default = {
-        local = "dev-saas-controller";
-        edge = "dev-saas-controller";
-        main = "prod-saas-controller";
-      };
-      description = ''
-        Mapping of environment names to saas-controller credential profiles.
-        Determines which control plane credentials are used for each environment.
-        This ensures production deployments use production credentials.
-      '';
-      example = {
-        local = "dev-saas-controller";
-        staging = "dev-saas-controller";
-        edge = "dev-saas-controller";
-        main = "prod-saas-controller";
-      };
-    };
-
-    defaultSaasControllerProfile = lib.mkOption {
-      type = lib.types.str;
-      default = "dev-saas-controller";
-      description = ''
-        Default saas-controller profile to use for environments not explicitly mapped.
+      example = lib.literalExpression ''
+        {
+          tailscale = {
+            TS_CLIENT_SECRET = { description = "Tailscale OAuth client secret"; };
+            TS_CLIENT_ID = { description = "Tailscale OAuth client ID"; required = false; };
+          };
+          zuplo-backend = {
+            ZUPLO_API_KEY = { description = "Zuplo API key for deployments"; };
+          };
+        }
       '';
     };
 
@@ -585,6 +566,53 @@ in
             description = "Run-time secret source configuration for local development";
           };
 
+          # Per-service secretspec configuration for sc check-secrets
+          secretspec = lib.mkOption {
+            type = lib.types.nullOr (lib.types.submodule {
+              options = {
+                environments = lib.mkOption {
+                  type = lib.types.attrsOf (lib.types.submodule {
+                    options = {
+                      serviceProfiles = lib.mkOption {
+                        type = lib.types.listOf lib.types.str;
+                        description = "List of secret profile names from saas-controller.secretProfiles to validate for this environment";
+                        example = [ "tailscale" "zuplo-backend" ];
+                      };
+                    };
+                  });
+                  description = ''
+                    Maps environment names to service profile selections.
+                    Each environment specifies which secret profiles are required.
+                  '';
+                  example = lib.literalExpression ''
+                    {
+                      local = { serviceProfiles = [ "tailscale" ]; };
+                      edge = { serviceProfiles = [ "zuplo-backend" ]; };
+                    }
+                  '';
+                };
+
+                tags = lib.mkOption {
+                  type = lib.types.listOf lib.types.str;
+                  default = [ ];
+                  description = "Tags for filtering: sc check-secrets --tag tailscale";
+                  example = [ "tailscale" "backend" ];
+                };
+
+                checkProvider = lib.mkOption {
+                  type = lib.types.nullOr lib.types.str;
+                  default = null;
+                  description = "Secretspec provider for checks. If null, uses secretspec's own default resolution.";
+                };
+              };
+            });
+            default = null;
+            description = ''
+              Per-service secretspec configuration. When non-null, service participates in sc check-secrets.
+              Defines which secret profiles are required per environment.
+            '';
+          };
+
           datadog = lib.mkOption {
             type = lib.types.nullOr (lib.types.submodule {
               options = {
@@ -748,37 +776,73 @@ in
       getEnabledEnvironments = service:
         lib.filterAttrs (_: env: env.enable) service.environments;
 
-      # Command to generate the secretspec file in .saas-controller/
-      generateControllerSecretspecCmd = lib.optionalString (config.saas-controller.secretspecContext != [ ]) ''
-                # Create .saas-controller directory if it doesn't exist
-                mkdir -p ${config.git.root}/.saas-controller
+      # Services with secretspec configuration (for sc check-secrets)
+      secretspecServices = lib.filterAttrs
+        (_: service: service.enable && service.secretspec != null)
+        config.saas-controller.services;
 
-                # Generate secretspec configuration
-                cat > ${config.git.root}/.saas-controller/secretspec.toml <<EOF
-        [project]
-        name = "saas-controller-runtime"
-        description = "Dynamically generated SaaS control plane secrets (Frontegg + Zuplo)"
-        revision = "1.0"
+      # Generate TOML content for a single secret entry
+      mkSecretToml = secretName: secretDef:
+        let
+          descLine = "description = \"${secretDef.description}\"";
+          reqLine = lib.optionalString (!secretDef.required) ", required = false";
+          provLine = lib.optionalString (secretDef.providers != [ ])
+            ", providers = [${lib.concatMapStringsSep ", " (p: "\"${p}\"") secretDef.providers}]";
+        in
+        "${secretName} = { ${descLine}${reqLine}${provLine} }";
 
-        # Extend control plane secretspec files
-        extends = [
-        ${lib.concatMapStringsSep ",\n" (path: "  \"../" + path + "\"") config.saas-controller.secretspecContext}
-        ]
+      # Generate secretspec.toml content for a service
+      mkServiceSecretspecToml = serviceName: secretspecCfg:
+        let
+          profiles = config.saas-controller.secretProfiles;
 
-        [profiles.default]
-        [profiles.dev-saas-controller]
-        [profiles.prod-saas-controller]
-        # Inherits profiles:
-        # - dev-saas-controller (for dev/edge/local environments)
-        # - prod-saas-controller (for production environments)
-        #
-        # Available secrets:
-        # From Frontegg: FRONTEGG_CLIENT_ID, FRONTEGG_API_KEY, FRONTEGG_BASE_URL, FRONTEGG_API_URL
-        # From Zuplo: ZUPLO_API_KEY
-        EOF
+          # For each environment, collect the union of secrets from its serviceProfiles
+          envSections = lib.concatStringsSep "\n\n" (lib.mapAttrsToList (envName: envCfg:
+            let
+              # Collect secrets from all service profiles for this environment
+              # First profile wins on duplicate secret names
+              collectSecrets = profileNames:
+                let
+                  addProfile = acc: profileName:
+                    let
+                      profileSecrets = profiles.${profileName} or { };
+                      # Only add secrets not already in acc (first occurrence wins)
+                      newSecrets = lib.filterAttrs (name: _: ! (acc ? ${name})) profileSecrets;
+                    in
+                    acc // newSecrets;
+                in
+                lib.foldl addProfile { } profileNames;
 
-                echo "  Generated .saas-controller/secretspec.toml"
-                echo "  Extends: ${lib.concatStringsSep ", " config.saas-controller.secretspecContext}"
+              secrets = collectSecrets envCfg.serviceProfiles;
+              secretLines = lib.concatStringsSep "\n" (lib.mapAttrsToList mkSecretToml secrets);
+            in
+            ''
+[profiles.${envName}]
+${secretLines}''
+          ) secretspecCfg.environments);
+        in
+        ''
+[project]
+name = "${serviceName}"
+revision = "1.0"
+
+${envSections}
+'';
+
+      # Generate all service secretspec TOML files
+      generateAllServiceSecretspecs = ''
+        mkdir -p ${config.git.root}/.saas-controller/secretspec
+        ${lib.concatStringsSep "\n" (lib.mapAttrsToList (serviceName: service:
+          let
+            tomlContent = mkServiceSecretspecToml serviceName service.secretspec;
+          in ''
+            mkdir -p ${config.git.root}/.saas-controller/secretspec/${serviceName}
+            cat > ${config.git.root}/.saas-controller/secretspec/${serviceName}/secretspec.toml <<'SECRETSPEC_EOF'
+${tomlContent}
+SECRETSPEC_EOF
+            echo "  Generated secretspec for ${serviceName}"
+          ''
+        ) secretspecServices)}
       '';
 
     in
@@ -795,6 +859,12 @@ in
         };
         environments = {
           local.enable = true;
+        };
+        secretspec = {
+          environments = {
+            local = { serviceProfiles = [ "tailscale" ]; };
+          };
+          tags = [ "tailscale" ];
         };
       };
 
@@ -907,14 +977,6 @@ in
           description = "Create all top-level projects (one-time setup)";
           exec = ''
             echo "🚀 Provisioning projects for all services..."
-            ${generateControllerSecretspecCmd}
-            echo ""
-
-            # Use default saas-controller profile for project creation
-            SAAS_PROFILE="${config.saas-controller.defaultSaasControllerProfile}"
-            SAAS_PROVIDER="${config.saas-controller.defaultProfileProvider}"
-
-            echo "🔑 Using saas-controller profile: $SAAS_PROFILE (provider: $SAAS_PROVIDER)"
             echo ""
 
             ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: service:
@@ -923,13 +985,7 @@ in
                 provisionCmd = provider.provisionProject name service;
               in ''
                 echo "📦 Provisioning project: ${name} (${service.provider})"
-
-                # Wrap with control plane secrets (ZUPLO_API_KEY, FRONTEGG_*, etc.)
-                cd ${config.git.root}/.saas-controller
-                ${pkgs.secretspec}/bin/secretspec run \
-                  --provider "$SAAS_PROVIDER" \
-                  --profile "$SAAS_PROFILE" -- bash -c ${lib.escapeShellArg provisionCmd}
-
+                bash -c ${lib.escapeShellArg provisionCmd}
                 echo ""
               ''
             ) enabledServices)}
@@ -959,7 +1015,6 @@ in
             fi
 
             echo "🚀 Deploying all services to: ''${ENVIRONMENT}"
-            ${generateControllerSecretspecCmd}
             echo ""
 
             # Call post-deploy tasks with JSON input via environment variable
@@ -986,7 +1041,6 @@ in
             ENVIRONMENT="''${1:-production}"
 
             echo "📊 Syncing service metadata to Datadog for environment: ''${ENVIRONMENT}"
-            ${generateControllerSecretspecCmd}
             echo ""
 
             ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: service:
@@ -1010,14 +1064,6 @@ in
           description = "Set up all secret export configurations (one-time setup)";
           exec = ''
             echo "🔐 Provisioning secret export operations..."
-            ${generateControllerSecretspecCmd}
-            echo ""
-
-            # Use default saas-controller profile for project creation
-            SAAS_PROFILE="${config.saas-controller.defaultSaasControllerProfile}"
-            SAAS_PROVIDER="${config.saas-controller.defaultProfileProvider}"
-
-            echo "🔑 Using saas-controller profile: $SAAS_PROFILE (provider: $SAAS_PROVIDER)"
             echo ""
 
             ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: exportConfig:
@@ -1026,13 +1072,7 @@ in
                 provisionCmd = provider.provisionProject name exportConfig;
               in ''
                 echo "🔑 Provisioning secret export: ${name}"
-
-                # Wrap with control plane secrets (ZUPLO_API_KEY, FRONTEGG_*, etc.)
-                cd ${config.git.root}/.saas-controller
-                ${pkgs.secretspec}/bin/secretspec run \
-                  --provider "$SAAS_PROVIDER" \
-                  --profile "$SAAS_PROFILE" -- bash -c ${lib.escapeShellArg provisionCmd}
-
+                bash -c ${lib.escapeShellArg provisionCmd}
                 echo ""
               ''
             ) enabledSecretExports)}
@@ -1060,7 +1100,6 @@ in
             fi
 
             echo "🔐 Exporting secrets for: ''${ENVIRONMENT}"
-            ${generateControllerSecretspecCmd}
             echo ""
 
             # Call secret export tasks with JSON input via environment variable
@@ -1077,116 +1116,126 @@ in
           '';
         };
 
-        # Script: check-saas-controller-secrets
-        # Check all saas-controller secrets are configured correctly
-        check-saas-controller-secrets = {
-          description = "Validate SaaS controller secrets for all profiles";
+        # Script: sc-check-secrets
+        # Unified secret validation across all services
+        sc-check-secrets = {
+          description = "Validate secrets for all services (supports --tag and --service filtering)";
           exec = ''
-            echo "🔐 Checking SaaS Controller secrets..."
-            ${generateControllerSecretspecCmd}
+            set -e
+
+            # Parse arguments
+            FILTER_TAG=""
+            FILTER_SERVICE=""
+
+            while [[ $# -gt 0 ]]; do
+              case $1 in
+                --tag)
+                  FILTER_TAG="$2"
+                  shift 2
+                  ;;
+                --service)
+                  FILTER_SERVICE="$2"
+                  shift 2
+                  ;;
+                --help|-h)
+                  echo "Usage: sc check-secrets [--tag <tag>] [--service <name>]"
+                  echo ""
+                  echo "Options:"
+                  echo "  --tag <tag>        Only check services with this tag"
+                  echo "  --service <name>   Only check a specific service"
+                  echo ""
+                  echo "Available services:"
+                  ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: service:
+                    let
+                      tags = service.secretspec.tags;
+                      tagStr = if tags == [ ] then "" else " (tags: ${lib.concatStringsSep ", " tags})";
+                    in ''
+                    echo "  ${name}${tagStr}"
+                  '') secretspecServices)}
+                  exit 0
+                  ;;
+                *)
+                  echo "❌ Error: Unknown argument: $1" >&2
+                  echo "Run 'sc check-secrets --help' for usage" >&2
+                  exit 1
+                  ;;
+              esac
+            done
+
+            echo "🔐 Checking service secrets..."
             echo ""
 
-            # Run from .saas-controller directory so secretspec finds the config
-            cd ${config.git.root}/.saas-controller
+            # Generate all secretspec TOML files
+            ${generateAllServiceSecretspecs}
+            echo ""
 
-            # Check dev-saas-controller profile
-            echo "📋 Checking dev-saas-controller profile..."
-            if ${pkgs.secretspec}/bin/secretspec check --provider onepassword --profile dev-saas-controller; then
-              echo "✅ dev-saas-controller secrets: OK"
-            else
-              echo "❌ dev-saas-controller secrets: MISSING"
-              echo ""
-              echo "Required secrets in 1Password:"
-              echo "  From Frontegg:"
-              echo "    - FRONTEGG_CLIENT_ID"
-              echo "    - FRONTEGG_API_KEY"
-              echo "    - FRONTEGG_BASE_URL"
-              echo "  From Zuplo:"
-              echo "    - ZUPLO_API_KEY"
-              echo ""
-              exit 1
+            TOTAL_CHECKS=0
+            TOTAL_ERRORS=0
+            SERVICES_CHECKED=0
+            SUMMARY=""
+
+            ${lib.concatStringsSep "\n" (lib.mapAttrsToList (serviceName: service:
+              let
+                secretspecCfg = service.secretspec;
+                tags = secretspecCfg.tags;
+                providerFlag = if secretspecCfg.checkProvider != null
+                  then "--provider ${secretspecCfg.checkProvider} "
+                  else "";
+              in ''
+                # Filter by service name
+                if [ -n "$FILTER_SERVICE" ] && [ "$FILTER_SERVICE" != "${serviceName}" ]; then
+                  : # skip
+                # Filter by tag
+                elif [ -n "$FILTER_TAG" ] && ! echo "${lib.concatStringsSep " " tags}" | grep -qw "$FILTER_TAG"; then
+                  : # skip
+                else
+                  SERVICES_CHECKED=$((SERVICES_CHECKED + 1))
+                  echo "📋 Checking: ${serviceName}"
+
+                  cd ${config.git.root}/.saas-controller/secretspec/${serviceName}
+
+                  ${lib.concatStringsSep "\n" (lib.mapAttrsToList (envName: envCfg: ''
+                    TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+                    if ${pkgs.secretspec}/bin/secretspec check ${providerFlag}--profile ${envName} 2>&1; then
+                      echo "  ✅ ${serviceName}/${envName}: OK"
+                      SUMMARY="$SUMMARY\n  ✅ ${serviceName}/${envName}"
+                    else
+                      echo "  ❌ ${serviceName}/${envName}: FAILED"
+                      SUMMARY="$SUMMARY\n  ❌ ${serviceName}/${envName}"
+                      TOTAL_ERRORS=$((TOTAL_ERRORS + 1))
+                    fi
+                  '') secretspecCfg.environments)}
+
+                  echo ""
+                fi
+              ''
+            ) secretspecServices)}
+
+            # Print summary
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+            if [ "$SERVICES_CHECKED" -eq 0 ]; then
+              if [ -n "$FILTER_TAG" ]; then
+                echo "No services matched tag: $FILTER_TAG"
+              elif [ -n "$FILTER_SERVICE" ]; then
+                echo "No service found: $FILTER_SERVICE"
+              else
+                echo "No services configured for secret checks"
+              fi
+              exit 0
             fi
-            echo ""
 
-            # Check prod-saas-controller profile
-            echo "📋 Checking prod-saas-controller profile..."
-            if ${pkgs.secretspec}/bin/secretspec check --provider onepassword --profile prod-saas-controller; then
-              echo "✅ prod-saas-controller secrets: OK"
-            else
-              echo "❌ prod-saas-controller secrets: MISSING"
+            echo -e "Summary:$SUMMARY"
+            echo ""
+            echo "Services checked: $SERVICES_CHECKED | Checks: $TOTAL_CHECKS | Errors: $TOTAL_ERRORS"
+
+            if [ "$TOTAL_ERRORS" -gt 0 ]; then
               echo ""
-              echo "Required secrets in 1Password:"
-              echo "  From Frontegg:"
-              echo "    - FRONTEGG_CLIENT_ID"
-              echo "    - FRONTEGG_API_KEY"
-              echo "    - FRONTEGG_BASE_URL"
-              echo "  From Zuplo:"
-              echo "    - ZUPLO_API_KEY"
-              echo ""
+              echo "❌ $TOTAL_ERRORS check(s) failed"
               exit 1
-            fi
-            echo ""
-
-            echo "✅ All SaaS controller secrets are properly configured"
-          '';
-        };
-
-        # Script: check-dev-saas-controller
-        # Check dev saas-controller secrets only
-        check-dev-saas-controller = {
-          description = "Validate development SaaS controller secrets";
-          exec = ''
-            echo "🔐 Checking development SaaS controller secrets..."
-            ${generateControllerSecretspecCmd}
-            echo ""
-
-            # Run from .saas-controller directory so secretspec finds the config
-            cd ${config.git.root}/.saas-controller
-
-            if ${pkgs.secretspec}/bin/secretspec check --provider onepassword --profile dev-saas-controller; then
-              echo "✅ dev-saas-controller secrets: OK"
             else
-              echo "❌ dev-saas-controller secrets: MISSING"
               echo ""
-              echo "Required secrets in 1Password:"
-              echo "  From Frontegg:"
-              echo "    - FRONTEGG_CLIENT_ID"
-              echo "    - FRONTEGG_API_KEY"
-              echo "    - FRONTEGG_BASE_URL"
-              echo "  From Zuplo:"
-              echo "    - ZUPLO_API_KEY"
-              echo ""
-              exit 1
-            fi
-          '';
-        };
-
-        # Script: check-prod-saas-controller
-        # Check prod saas-controller secrets only
-        check-prod-saas-controller = {
-          description = "Validate production SaaS controller secrets";
-          exec = ''
-            echo "🔐 Checking production SaaS controller secrets..."
-            ${generateControllerSecretspecCmd}
-            echo ""
-
-            # Run from .saas-controller directory so secretspec finds the config
-            cd ${config.git.root}/.saas-controller
-
-            if ${pkgs.secretspec}/bin/secretspec check --provider onepassword --profile prod-saas-controller; then
-              echo "✅ prod-saas-controller secrets: OK"
-            else
-              echo "❌ prod-saas-controller secrets: MISSING"
-              echo ""
-              echo "Required secrets in 1Password:"
-              echo "  From Frontegg:"
-              echo "    - FRONTEGG_CLIENT_ID"
-              echo "    - FRONTEGG_API_KEY"
-              echo "    - FRONTEGG_BASE_URL"
-              echo "  From Zuplo:"
-              echo "    - ZUPLO_API_KEY"
-              echo ""
-              exit 1
+              echo "✅ All secret checks passed"
             fi
           '';
         };
@@ -1201,7 +1250,15 @@ in
                         COMMAND="''${1:-}"
                         shift || true
 
-                        # Parse arguments
+                        # Commands that handle their own argument parsing
+                        case "$COMMAND" in
+                          check-secrets)
+                            sc-check-secrets "$@"
+                            exit $?
+                            ;;
+                        esac
+
+                        # Parse arguments for standard commands
                         SERVICE=""
                         ENVIRONMENT=""
 
@@ -1331,9 +1388,6 @@ in
                             # Default environment for 'deploy' is 'development'
                             ENVIRONMENT="''${ENVIRONMENT:-development}"
 
-                            # Generate secretspec.toml for control plane credentials
-                            ${generateControllerSecretspecCmd}
-
                             if [ -n "$SERVICE" ]; then
                               echo "🚀 Deploying service: $SERVICE (environment: $ENVIRONMENT)"
                               echo ""
@@ -1358,9 +1412,10 @@ in
               sc <command> [service] [--environment <env>]
 
             Commands:
-              up          Start local dev services via docker-compose (default env: local)
-              deploy      Deploy service(s) with pre/post hooks (default env: development)
-              help        Show this help message
+              up              Start local dev services via docker-compose (default env: local)
+              deploy          Deploy service(s) with pre/post hooks (default env: development)
+              check-secrets   Validate secrets for all services
+              help            Show this help message
 
             Examples:
               sc up                                      # Start all local services
@@ -1371,13 +1426,17 @@ in
               sc deploy --environment production         # Deploy all to production
               sc deploy atlas3-dev-gateway -e edge       # Deploy specific service to edge
 
+              sc check-secrets                           # Check all service secrets
+              sc check-secrets --tag tailscale           # Check only tailscale-tagged services
+              sc check-secrets --service test-gateway    # Check specific service
+
             Options:
               --environment, -e <env>   Target environment (local, development, edge, production)
                                         Defaults: up=local, deploy=development
               --help, -h                Show this help message
 
             Note: Deploy runs pre-hooks, deploys the service, then runs post-hooks automatically.
-                  Task output is shown in real-time for better visibility.
+                  Deployment credentials must be in the environment (e.g., via CI secrets).
             EOF
                             ;;
 
