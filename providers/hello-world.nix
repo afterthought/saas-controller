@@ -45,7 +45,7 @@
           "443": { "HTTPS": true }
         },
         "Web": {
-          "${TS_CERT_DOMAIN}:443": {
+          "''${TS_CERT_DOMAIN}:443": {
             "Handlers": { "/": { "Proxy": "http://127.0.0.1:3000" } }
           }
         }
