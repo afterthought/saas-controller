@@ -38,13 +38,14 @@
       DOCKERFILE
 
       # Generate serve-config.json for tailscale HTTPS routing
-      cat > "$COMPOSE_DIR/serve-config.json" <<SERVECONFIG
+      # Uses ${TS_CERT_DOMAIN} placeholder — containerboot replaces it with the node's FQDN
+      cat > "$COMPOSE_DIR/serve-config.json" <<'SERVECONFIG'
       {
         "TCP": {
           "443": { "HTTPS": true }
         },
         "Web": {
-          "$TS_HOSTNAME:443": {
+          "${TS_CERT_DOMAIN}:443": {
             "Handlers": { "/": { "Proxy": "http://127.0.0.1:3000" } }
           }
         }

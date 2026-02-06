@@ -33,18 +33,19 @@
       DOCKERFILE
 
       # Generate serve-config.json for tailscale HTTPS routing
-      cat > "$COMPOSE_DIR/serve-config.json" <<SERVECONFIG
+      # Uses ${TS_CERT_DOMAIN} placeholder — containerboot replaces it with the node's FQDN
+      cat > "$COMPOSE_DIR/serve-config.json" <<'SERVECONFIG'
       {
         "TCP": {
           "443": { "HTTPS": true },
           "8443": { "HTTPS": true }
         },
         "Web": {
-          "$TS_HOSTNAME:443": {
-            "Handlers": { "/": { "Proxy": "http://127.0.0.1:3000" } }
+          "${TS_CERT_DOMAIN}:443": {
+            "Handlers": { "/": { "Proxy": "http://127.0.0.1:30000" } }
           },
-          "$TS_HOSTNAME:8443": {
-            "Handlers": { "/": { "Proxy": "http://127.0.0.1:3001" } }
+          "${TS_CERT_DOMAIN}:8443": {
+            "Handlers": { "/": { "Proxy": "http://127.0.0.1:30001" } }
           }
         }
       }
@@ -99,7 +100,7 @@
             - node_modules:/app/node_modules
           environment:
             - ZUDOKU_PUBLIC_SERVER_URL=https://$FQDN:443
-          command: ["npx", "zuplo", "dev", "--port", "3000", "--start-docs", "false", "--start-editor", "false"]
+          command: ["npx", "zuplo", "dev", "--port", "30000", "--start-docs", "false", "--start-editor", "false"]
 
         zuplo-docs:
           build:
@@ -114,7 +115,7 @@
             - node_modules:/app/node_modules
           environment:
             - ZUDOKU_PUBLIC_SERVER_URL=https://$FQDN:443
-          command: ["npx", "zuplo", "docs", "--port", "3001"]
+          command: ["npx", "zuplo", "docs", "--port", "30001"]
 
       volumes:
         node_modules:
