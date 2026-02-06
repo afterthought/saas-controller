@@ -42,10 +42,10 @@
         },
         "Web": {
           "''${TS_CERT_DOMAIN}:443": {
-            "Handlers": { "/": { "Proxy": "http://127.0.0.1:30000" } }
+            "Handlers": { "/": { "Proxy": "http://127.0.0.1:30001" } }
           },
           "''${TS_CERT_DOMAIN}:8443": {
-            "Handlers": { "/": { "Proxy": "http://127.0.0.1:30001" } }
+            "Handlers": { "/": { "Proxy": "http://127.0.0.1:30000" } }
           }
         }
       }
@@ -99,7 +99,8 @@
             - ${sourceDir}:/app
             - node_modules:/app/node_modules
           environment:
-            - ZUDOKU_PUBLIC_SERVER_URL=https://$FQDN:443
+            - ZUDOKU_PUBLIC_SERVER_URL=https://$FQDN:8443
+            - DANGEROUSLY_DISABLE_HOST_CHECK=true
           command: ["npx", "zuplo", "dev", "--port", "30000", "--start-docs", "false", "--start-editor", "false"]
 
         zuplo-docs:
@@ -115,6 +116,7 @@
             - node_modules:/app/node_modules
           environment:
             - ZUDOKU_PUBLIC_SERVER_URL=https://$FQDN:443
+            - DANGEROUSLY_DISABLE_HOST_CHECK=true
           command: ["npx", "zuplo", "docs", "--port", "30001"]
 
       volumes:
@@ -142,8 +144,8 @@
       # Print HTTPS URLs
       export DEVSERVER_URL="https://''${FQDN}:443"
       echo "DEVSERVER_URL: $DEVSERVER_URL"
-      echo "  API:  https://''${FQDN}:443"
-      echo "  Docs: https://''${FQDN}:8443"
+      echo "  Docs: https://''${FQDN}:443"
+      echo "  API:  https://''${FQDN}:8443"
 
       # Stream logs in foreground
       docker compose -f "$COMPOSE_DIR/docker-compose.yml" logs -f
