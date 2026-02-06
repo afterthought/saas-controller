@@ -29,7 +29,7 @@
         fi
 
         # Get secretSource and secretTarget with environment overrides and fallbacks
-        SECRET_SOURCE="${provisionConfig.secretSource or "onepassword"}"
+        SECRET_SOURCE="${provisionConfig.secretSource or "saas-controller"}"
         SECRET_TARGET="${provisionConfig.secretTarget or ""}"
 
         # Get include/exclude filter patterns (optional)

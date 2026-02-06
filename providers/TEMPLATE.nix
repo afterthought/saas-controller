@@ -45,9 +45,9 @@
   #   - service: Full service configuration object
   #   - environment: Target environment name (e.g., "production", "edge")
   #   - envConfig: Environment-specific configuration
-  #   - profile: SaaS controller profile name (e.g., "dev-saas-controller")
-  #   - provider: SaaS controller provider name (e.g., "onepassword")
-  # Note: Control plane secrets (API keys, etc.) are provided by wrapper in helpers.nix
+  #   - profile: SaaS controller profile name (legacy, unused)
+  #   - provider: SaaS controller provider alias (legacy, unused)
+  # Note: Control plane secrets must be in the environment (caller's responsibility)
   # Returns: Bash script that deploys the service
   deploy = serviceName: service: environment: envConfig: profile: provider: ''
     echo "  Deploying ${serviceName} to ${environment}"

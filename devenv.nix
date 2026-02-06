@@ -375,11 +375,11 @@ in
                   type = lib.types.nullOr lib.types.str;
                   default = null;
                   description = ''
-                    Secret storage provider for this environment (e.g., "onepassword").
+                    Secret storage provider alias for this environment (e.g., "saas-controller").
                     Profile is automatically set to the environment name.
                     Set to null to skip secret export for this environment.
                   '';
-                  example = "onepassword";
+                  example = "saas-controller";
                 };
 
                 # Provider-specific environment config
@@ -409,7 +409,7 @@ in
                 enable = true;
                 branch = "main";
                 secretspec = {
-                  provider = "onepassword";
+                  provider = "saas-controller";
                   profile = "development";
                 };
               };
@@ -417,13 +417,13 @@ in
                 enable = true;
                 branch = "main";
                 autodeploy = true;
-                secretspec_provider = "onepassword"; # Uses "edge" as profile
+                secretspec_provider = "saas-controller"; # Uses "edge" as profile
               };
               production = {
                 enable = true;
                 branch = "main";
                 autodeploy = false;
-                secretspec_provider = "onepassword"; # Uses "production" as profile
+                secretspec_provider = "saas-controller"; # Uses "production" as profile
               };
             };
           };
@@ -474,7 +474,7 @@ in
                     {
                       type = "secretspec";
                       config = {
-                        secretSource = "onepassword://madswan@willdan-corp";
+                        secretSource = "saas-controller";
                         secretTarget = "zuplo://atlas3-dev/main";
                         exclude = "ZUDOKU_PUBLIC_*";
                       };
@@ -483,7 +483,7 @@ in
                     {
                       type = "secretspec";
                       config = {
-                        secretSource = "onepassword://madswan@willdan-corp";
+                        secretSource = "saas-controller";
                         secretTarget = "zuplo://atlas3-dev/main?is-secret=false";
                         include = "ZUDOKU_PUBLIC_*";
                       };
@@ -540,7 +540,7 @@ in
                   type = lib.types.nullOr lib.types.str;
                   default = null;
                   description = "Default secret source provider for local development";
-                  example = "onepassword://madswan@willdan-corp";
+                  example = "saas-controller";
                 };
 
                 environments = lib.mkOption {
@@ -556,8 +556,8 @@ in
                   default = { };
                   description = "Per-environment secret source overrides";
                   example = {
-                    local = { secretSource = "onepassword://madswan@willdan-corp"; };
-                    edge = { secretSource = "onepassword://madswan@willdan-corp/edge-vault"; };
+                    local = { secretSource = "saas-controller"; };
+                    edge = { secretSource = "saas-controller"; };
                   };
                 };
               };
@@ -695,8 +695,8 @@ in
 
                 secretspec_provider = lib.mkOption {
                   type = lib.types.str;
-                  description = "Default SecretSpec provider to read secrets from (can be overridden per environment)";
-                  example = "onepassword";
+                  description = "Default SecretSpec provider alias to read secrets from (can be overridden per environment)";
+                  example = "saas-controller";
                 };
               };
             };
