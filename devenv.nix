@@ -1514,9 +1514,9 @@ SECRETSPEC_EOF
             enabledServices);
 
           # Dev server task — starts all local services via sc up
-          # Can be invoked by VibeKanban dev server script: devenv tasks run saas-up
+          # Can be invoked by VibeKanban dev server script: devenv tasks run saas:up
           devServeTasks = [
-            (lib.nameValuePair "saas-up" {
+            (lib.nameValuePair "saas:up" {
               description = "Start local dev services with tailscale HTTPS";
               exec = ''
                 exec sc up
