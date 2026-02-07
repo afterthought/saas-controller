@@ -1513,8 +1513,19 @@ SECRETSPEC_EOF
             )
             enabledServices);
 
-          # Combine all tasks (dev-serve uses scripts in PATH, not devenv tasks)
-          allTasks = secretExportTasks ++ serviceDeployTasks;
+          # Dev server task — starts all local services via sc up
+          # Can be invoked by VibeKanban dev server script: devenv tasks run saas-up
+          devServeTasks = [
+            (lib.nameValuePair "saas-up" {
+              description = "Start local dev services with tailscale HTTPS";
+              exec = ''
+                exec sc up
+              '';
+            })
+          ];
+
+          # Combine all tasks
+          allTasks = secretExportTasks ++ serviceDeployTasks ++ devServeTasks;
         in
         lib.listToAttrs allTasks
       );
