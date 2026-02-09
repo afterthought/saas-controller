@@ -36,6 +36,11 @@ let
     { }
     providers;
 
+  # Convert an SA token alias to its environment variable name.
+  # "client-willdan" -> "OP_SA_CLIENT_WILLDAN"
+  toSASecretName = name:
+    "OP_SA_${lib.toUpper (builtins.replaceStrings ["-"] ["_"] name)}";
+
   # Import task helpers
   helpers = import ./lib/helpers.nix { inherit pkgs lib config providers; };
 
@@ -92,6 +97,16 @@ in
             ZUPLO_API_KEY = { description = "Zuplo API key for deployments"; providers = [ "saas-controller" ]; };
           };
         }
+      '';
+    };
+
+    # Directory containing SA token secretspec managed by __mac-nix
+    saTokensDir = lib.mkOption {
+      type = lib.types.str;
+      default = "$HOME/.config/secretspec/sa-tokens";
+      description = ''
+        Path to the directory containing SA token secretspec.toml.
+        Used for per-service SA token retrieval from macOS keyring.
       '';
     };
 
@@ -637,6 +652,18 @@ in
                   default = [ ];
                   description = "Tags for filtering: sc check-secrets --tag tailscale";
                   example = [ "tailscale" "backend" ];
+                };
+
+                saToken = lib.mkOption {
+                  type = lib.types.nullOr lib.types.str;
+                  default = null;
+                  description = ''
+                    SA token alias for keyring retrieval. When set, sc up retrieves
+                    the named token from the keyring and exports it as OP_SERVICE_ACCOUNT_TOKEN
+                    before running secretspec run for this service.
+                    E.g. "client-willdan" retrieves OP_SA_CLIENT_WILLDAN.
+                  '';
+                  example = "client-willdan";
                 };
               };
             });
@@ -1347,31 +1374,8 @@ SECRETSPEC_EOF
                             # Default environment for 'up' is 'local'
                             ENVIRONMENT="''${ENVIRONMENT:-local}"
 
-                            # --- Generate secretspec TOMLs and inject secrets ---
+                            # --- Generate secretspec TOMLs (for per-service injection below) ---
                             ${generateAllServiceSecretspecs}
-
-                            # If a specific service is targeted, use its secretspec
-                            # Otherwise use the first service's secretspec (they share the tailscale profile)
-                            SC_SECRETSPEC_DIR=""
-                            if [ -n "$SERVICE" ]; then
-                              SC_SECRETSPEC_DIR="${config.git.root}/.saas-controller/secretspec/$SERVICE"
-                            else
-                              # Use first available service secretspec
-                              ${lib.concatStringsSep "\n" (lib.mapAttrsToList (serviceName: service:
-                                lib.optionalString (service.secretspec != null) ''
-                                  if [ -z "$SC_SECRETSPEC_DIR" ] && [ -d "${config.git.root}/.saas-controller/secretspec/${serviceName}" ]; then
-                                    SC_SECRETSPEC_DIR="${config.git.root}/.saas-controller/secretspec/${serviceName}"
-                                  fi
-                                ''
-                              ) enabledServices)}
-                            fi
-
-                            # If we have a secretspec, re-exec under secretspec run to inject secrets
-                            if [ -n "$SC_SECRETSPEC_DIR" ] && [ -f "$SC_SECRETSPEC_DIR/secretspec.toml" ] && [ -z "''${__SC_SECRETS_INJECTED:-}" ]; then
-                              export __SC_SECRETS_INJECTED=1
-                              cd "$SC_SECRETSPEC_DIR"
-                              exec ${pkgs.secretspec}/bin/secretspec run --profile "$ENVIRONMENT" -- "$0" up $SERVICE ''${ENVIRONMENT:+--environment $ENVIRONMENT}
-                            fi
 
                             # --- Hostname derivation ---
                             if [ -n "''${VK_WORKSPACE_ID:-}" ]; then
@@ -1399,17 +1403,6 @@ SECRETSPEC_EOF
 
                             echo "Tailscale: tailnet=$SC_TAILNET slug=$SC_SLUG"
 
-                            # --- Tailscale credentials ---
-                            # Injected by secretspec run above. Check they're set.
-                            if [ -z "''${TS_CLIENT_SECRET:-}" ]; then
-                              echo "❌ Error: TS_CLIENT_SECRET not set." >&2
-                              echo "  Ensure the secret exists in 1Password under the saas-controller provider alias." >&2
-                              echo "  Run 'sc check-secrets' to diagnose." >&2
-                              exit 1
-                            fi
-                            export TS_CLIENT_SECRET
-                            export TS_CLIENT_ID="''${TS_CLIENT_ID:-}"
-
                             # Collect compose dirs for cleanup
                             COMPOSE_DIRS=()
 
@@ -1432,13 +1425,41 @@ SECRETSPEC_EOF
                                   provider = providers.${service.provider} or null;
                                   hasUp = provider != null && provider ? up;
                                   upScript = if hasUp then provider.up serviceName service else "";
+                                  secretspecDir = "${config.git.root}/.saas-controller/secretspec/${serviceName}";
+                                  hasSecretspec = service.secretspec != null;
+                                  hasSAToken = hasSecretspec && service.secretspec.saToken != null;
+                                  saSecretName = if hasSAToken then toSASecretName service.secretspec.saToken else "";
+                                  saTokensDir = config.saas-controller.saTokensDir;
+
+                                  # SA token swap snippet (only if saToken is configured)
+                                  saSwapSnippet = lib.optionalString hasSAToken ''
+                                    # SA token swap: retrieve ${saSecretName} from keyring
+                                    SA_TOKEN="$(cd "${saTokensDir}" && ${pkgs.secretspec}/bin/secretspec get --provider keyring --profile default ${saSecretName})"
+                                    if [ -z "$SA_TOKEN" ]; then
+                                      echo "❌ Error: Failed to retrieve ${saSecretName} from keyring for ${serviceName}." >&2
+                                      echo "  Run 'store-sa-tokens' to populate SA tokens in the keyring." >&2
+                                      exit 1
+                                    fi
+                                    export OP_SERVICE_ACCOUNT_TOKEN="$SA_TOKEN"
+                                  '';
+
+                                  # Wrap upScript with secretspec run if service has secretspec
+                                  wrappedUpScript = if hasSecretspec then ''
+                                    ${saSwapSnippet}
+                                    __sc_up() {
+                                      ${upScript}
+                                    }
+                                    export -f __sc_up
+                                    cd "${secretspecDir}"
+                                    ${pkgs.secretspec}/bin/secretspec run --profile "$ENVIRONMENT" -- bash -c '__sc_up'
+                                  '' else upScript;
                                 in
                                 lib.optionalString (hasLocal && hasUp) ''
                                   if [ "$SERVICE" = "${serviceName}" ]; then
                                     FOUND=true
                                     COMPOSE_DIRS+=("${config.git.root}/.saas-controller/compose/${serviceName}")
                                     (
-                                      ${upScript}
+                                      ${wrappedUpScript}
                                     ) &
                                   fi
                                 ''
@@ -1457,11 +1478,37 @@ SECRETSPEC_EOF
                                   provider = providers.${service.provider} or null;
                                   hasUp = provider != null && provider ? up;
                                   upScript = if hasUp then provider.up serviceName service else "";
+                                  secretspecDir = "${config.git.root}/.saas-controller/secretspec/${serviceName}";
+                                  hasSecretspec = service.secretspec != null;
+                                  hasSAToken = hasSecretspec && service.secretspec.saToken != null;
+                                  saSecretName = if hasSAToken then toSASecretName service.secretspec.saToken else "";
+                                  saTokensDir = config.saas-controller.saTokensDir;
+
+                                  saSwapSnippet = lib.optionalString hasSAToken ''
+                                    # SA token swap: retrieve ${saSecretName} from keyring
+                                    SA_TOKEN="$(cd "${saTokensDir}" && ${pkgs.secretspec}/bin/secretspec get --provider keyring --profile default ${saSecretName})"
+                                    if [ -z "$SA_TOKEN" ]; then
+                                      echo "❌ Error: Failed to retrieve ${saSecretName} from keyring for ${serviceName}." >&2
+                                      echo "  Run 'store-sa-tokens' to populate SA tokens in the keyring." >&2
+                                      exit 1
+                                    fi
+                                    export OP_SERVICE_ACCOUNT_TOKEN="$SA_TOKEN"
+                                  '';
+
+                                  wrappedUpScript = if hasSecretspec then ''
+                                    ${saSwapSnippet}
+                                    __sc_up() {
+                                      ${upScript}
+                                    }
+                                    export -f __sc_up
+                                    cd "${secretspecDir}"
+                                    ${pkgs.secretspec}/bin/secretspec run --profile "$ENVIRONMENT" -- bash -c '__sc_up'
+                                  '' else upScript;
                                 in
                                 lib.optionalString (hasLocal && hasUp) ''
                                   COMPOSE_DIRS+=("${config.git.root}/.saas-controller/compose/${serviceName}")
                                   (
-                                    ${upScript}
+                                    ${wrappedUpScript}
                                   ) &
                                 ''
                               ) enabledServices)}

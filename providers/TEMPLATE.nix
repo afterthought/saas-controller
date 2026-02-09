@@ -8,13 +8,19 @@
 {
   # OPTIONAL: Secret profiles contributed by this provider
   # Profiles declared here are automatically merged into saas-controller.secretProfiles.
-  # Services reference them via secretspec.environments.<env>.serviceProfiles.
+  # When a service uses this provider, the provider's profiles are AUTO-INCLUDED
+  # in the service's secretspec — no need to add them to serviceProfiles manually.
   # secretProfiles = {
   #   my-provider = {
   #     MY_API_KEY = { description = "API key for my-provider"; providers = [ "saas-controller" ]; };
   #     MY_SECRET = { description = "Shared secret"; required = false; providers = [ "saas-controller" ]; };
   #   };
   # };
+  #
+  # For services needing secrets from a client-scoped 1Password vault (not the
+  # default SA token), set secretspec.saToken on the service:
+  #   secretspec.saToken = "client-willdan";  # retrieves OP_SA_CLIENT_WILLDAN from keyring
+  # sc up will swap the SA token before injecting secrets for that service.
 
   # OPTIONAL: Local dev lifecycle via docker-compose
   # Called by: sc up <service>

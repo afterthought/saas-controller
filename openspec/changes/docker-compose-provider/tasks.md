@@ -30,13 +30,13 @@ yxvd0eyw: Add three-layer secret composition (extraSecrets + auto-include)
   - Replace inline sidecar/lifecycle code with library calls
   - Verify generated compose files are structurally identical
 
-- [ ] `yxvd0eyw` — Add three-layer secret composition with extraSecrets and auto-include
+- [x] `yxvd0eyw` — Add three-layer secret composition with extraSecrets and auto-include
   - Spec: `specs/secret-composition/spec.md`
   - Add `secrets` option to environment submodule
   - Auto-include provider profiles in `mkServiceSecretspecToml`
   - First occurrence wins on duplicate names
 
-- [ ] `amorhj0z` — Add SA token swap with per-service secret injection
+- [x] `amorhj0z` — Add SA token swap with per-service secret injection
   - Spec: `specs/sa-token-swap/spec.md`
   - Blocked by: `yxvd0eyw`
   - Add `saToken`, `saTokensDir`, `toSASecretName`
