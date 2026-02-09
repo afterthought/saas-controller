@@ -5,4 +5,4 @@
 .devenv/
 .devenv.flake.nix
 devenv.lock
-.envrc
+
