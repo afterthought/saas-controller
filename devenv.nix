@@ -75,13 +75,7 @@ in
           };
         };
       }));
-      default = {
-        tailscale = {
-          TS_CLIENT_SECRET = { description = "Tailscale OAuth client secret for ephemeral node creation"; providers = [ "saas-controller" ]; };
-          TS_CLIENT_ID = { description = "Tailscale OAuth client ID"; required = false; providers = [ "saas-controller" ]; };
-          SC_TAILNET = { description = "Tailnet MagicDNS suffix, e.g. my-tailnet.ts.net (auto-detected if host tailscale installed)"; required = false; providers = [ "saas-controller" ]; };
-        };
-      };
+      default = { };
       description = ''
         Named secret profiles defined at the controller level.
         Each profile maps secret names to their definitions (description, required, providers).
@@ -932,15 +926,20 @@ SECRETSPEC_EOF
 
     in
     {
-      # Merge provider-contributed secret profiles into controller config
-      # Providers declare profiles via secretProfiles attr (e.g., zuplo.nix → "zuplo" profile)
+      # Merge built-in + provider-contributed secret profiles into controller config
       # Uses mkDefault so consumers can override with explicit secretProfiles config
       saas-controller.secretProfiles = lib.mapAttrs
         (_profileName: secrets: lib.mapAttrs
           (_secretName: secretDef: lib.mkDefault secretDef)
           secrets
         )
-        providerSecretProfiles;
+        ({
+          tailscale = {
+            TS_CLIENT_SECRET = { description = "Tailscale OAuth client secret for ephemeral node creation"; providers = [ "saas-controller" ]; };
+            TS_CLIENT_ID = { description = "Tailscale OAuth client ID"; required = false; providers = [ "saas-controller" ]; };
+            SC_TAILNET = { description = "Tailnet MagicDNS suffix, e.g. my-tailnet.ts.net (auto-detected if host tailscale installed)"; required = false; providers = [ "saas-controller" ]; };
+          };
+        } // providerSecretProfiles);
 
       # Test service configuration (for local development/testing of the module)
       saas-controller.services.test-gateway = {
@@ -956,6 +955,7 @@ SECRETSPEC_EOF
           local.enable = true;
         };
         secretspec = {
+          saToken = "client-willdan";
           environments = {
             local = { serviceProfiles = [ "tailscale" ]; };
           };
