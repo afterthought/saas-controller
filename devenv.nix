@@ -587,6 +587,37 @@ in
                         description = "List of secret profile names from saas-controller.secretProfiles to validate for this environment";
                         example = [ "tailscale" "zuplo-backend" ];
                       };
+
+                      secrets = lib.mkOption {
+                        type = lib.types.attrsOf (lib.types.submodule {
+                          options = {
+                            description = lib.mkOption {
+                              type = lib.types.str;
+                              description = "Human-readable description of this secret";
+                            };
+                            required = lib.mkOption {
+                              type = lib.types.bool;
+                              default = true;
+                              description = "Whether this secret is required";
+                            };
+                            providers = lib.mkOption {
+                              type = lib.types.listOf lib.types.str;
+                              default = [ ];
+                              description = "SecretSpec provider aliases that supply this secret";
+                            };
+                          };
+                        });
+                        default = { };
+                        description = ''
+                          Per-instance extra secrets for this environment.
+                          These merge with profile secrets (profiles take precedence on duplicates).
+                        '';
+                        example = lib.literalExpression ''
+                          {
+                            STRIPE_API_KEY = { description = "Stripe API key"; providers = [ "client-willdan" ]; };
+                          }
+                        '';
+                      };
                     };
                   });
                   description = ''
@@ -796,15 +827,28 @@ in
         "${secretName} = { ${descLine}${reqLine}${provLine} }";
 
       # Generate secretspec.toml content for a service
-      mkServiceSecretspecToml = serviceName: secretspecCfg:
+      # Generate secretspec.toml content for a service.
+      # Three-layer secret composition:
+      #   1. Controller-level profiles from serviceProfiles (includes auto-included provider profiles)
+      #   2. Provider-contributed profiles auto-included from providers.<provider>.secretProfiles
+      #   3. Per-instance inline secrets from environment's secrets option
+      # First occurrence wins on duplicate secret names.
+      mkServiceSecretspecToml = serviceName: service:
         let
+          secretspecCfg = service.secretspec;
           profiles = config.saas-controller.secretProfiles;
 
-          # For each environment, collect the union of secrets from its serviceProfiles
+          # Auto-include provider's secret profiles
+          providerObj = providers.${service.provider} or {};
+          providerProfileNames = lib.attrNames (providerObj.secretProfiles or {});
+
+          # For each environment, collect the union of secrets from all three layers
           envSections = lib.concatStringsSep "\n\n" (lib.mapAttrsToList (envName: envCfg:
             let
-              # Collect secrets from all service profiles for this environment
-              # First profile wins on duplicate secret names
+              # Prepend provider profiles to explicit serviceProfiles (deduped)
+              allProfileNames = lib.unique (providerProfileNames ++ envCfg.serviceProfiles);
+
+              # Layer 1+2: Collect secrets from profiles (first occurrence wins)
               collectSecrets = profileNames:
                 let
                   addProfile = acc: profileName:
@@ -817,8 +861,15 @@ in
                 in
                 lib.foldl addProfile { } profileNames;
 
-              secrets = collectSecrets envCfg.serviceProfiles;
-              secretLines = lib.concatStringsSep "\n" (lib.mapAttrsToList mkSecretToml secrets);
+              profileSecrets = collectSecrets allProfileNames;
+
+              # Layer 3: Inline secrets (only add if not already from profiles)
+              inlineSecrets = envCfg.secrets or {};
+              extraSecrets = lib.filterAttrs (name: _: ! (profileSecrets ? ${name})) inlineSecrets;
+
+              # Merge all layers
+              allSecrets = profileSecrets // extraSecrets;
+              secretLines = lib.concatStringsSep "\n" (lib.mapAttrsToList mkSecretToml allSecrets);
             in
             ''
 [profiles.${envName}]
@@ -838,7 +889,7 @@ ${envSections}
         mkdir -p ${config.git.root}/.saas-controller/secretspec
         ${lib.concatStringsSep "\n" (lib.mapAttrsToList (serviceName: service:
           let
-            tomlContent = mkServiceSecretspecToml serviceName service.secretspec;
+            tomlContent = mkServiceSecretspecToml serviceName service;
           in ''
             mkdir -p ${config.git.root}/.saas-controller/secretspec/${serviceName}
             cat > ${config.git.root}/.saas-controller/secretspec/${serviceName}/secretspec.toml <<'SECRETSPEC_EOF'
@@ -876,7 +927,7 @@ SECRETSPEC_EOF
         };
         secretspec = {
           environments = {
-            local = { serviceProfiles = [ "tailscale" "zuplo" ]; };
+            local = { serviceProfiles = [ "tailscale" ]; };
           };
           tags = [ "tailscale" "zuplo" ];
         };

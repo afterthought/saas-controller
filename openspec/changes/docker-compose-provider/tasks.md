@@ -19,12 +19,12 @@ yxvd0eyw: Add three-layer secret composition (extraSecrets + auto-include)
 
 ### Task List
 
-- [ ] `78gz5v9g` — Extract shared compose lifecycle into `lib/docker-compose.nix`
+- [x] `78gz5v9g` — Extract shared compose lifecycle into `lib/docker-compose.nix`
   - Spec: `specs/docker-compose-base/spec.md`
   - Create `mkTailscaleSidecar`, `mkServeConfig`, `mkComposeLifecycle`
   - Library only — no provider changes yet
 
-- [ ] `s0vmqgy6` — Refactor hello-world and zuplo providers to use shared library
+- [x] `s0vmqgy6` — Refactor hello-world and zuplo providers to use shared library
   - Spec: `specs/docker-compose-base/spec.md`
   - Blocked by: `78gz5v9g`
   - Replace inline sidecar/lifecycle code with library calls
