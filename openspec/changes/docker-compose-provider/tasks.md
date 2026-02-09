@@ -42,7 +42,7 @@ yxvd0eyw: Add three-layer secret composition (extraSecrets + auto-include)
   - Add `saToken`, `saTokensDir`, `toSASecretName`
   - Rewrite `sc up` from single re-exec to per-service subshells
 
-- [ ] `uulerxje` — Create docker-compose provider with compose overlay
+- [x] `uulerxje` — Create docker-compose provider with compose overlay
   - Spec: `specs/docker-compose-base/spec.md`
   - Blocked by: `78gz5v9g`, `amorhj0z`
   - Accept pre-authored compose files, inject tailscale via overlay

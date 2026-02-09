@@ -11,6 +11,9 @@ let
     frontegg = import ./providers/frontegg.nix { inherit pkgs lib config; };
     datadog = import ./providers/datadog.nix { inherit pkgs lib config; };
 
+    # Generic provider for pre-authored docker-compose files
+    docker-compose = import ./providers/docker-compose.nix { inherit pkgs lib config; };
+
     # Example provider for testing sc up / dev-serve
     hello-world = import ./providers/hello-world.nix { inherit pkgs lib config; };
 

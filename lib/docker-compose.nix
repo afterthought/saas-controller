@@ -108,6 +108,9 @@ rec {
   #   composeDir: Nix string — path to the compose directory (baked in at eval time)
   #   serviceName: Nix string — human-readable name for log messages
   #   composeFiles: List of compose file basenames. Default: ["docker-compose.yml"]
+  #   projectDir: Optional Nix string — override --project-directory for docker compose.
+  #               Controls where relative paths (build context, volumes) are resolved from.
+  #               Defaults to null (docker compose uses first -f file's directory).
   #   urls: List of { label, url } for printing HTTPS URLs after startup.
   #         URL values can contain bash variable references (e.g. "$FQDN").
   #
@@ -116,9 +119,12 @@ rec {
     composeDir,
     serviceName,
     composeFiles ? [ "docker-compose.yml" ],
+    projectDir ? null,
     urls ? [],
   }:
     let
+      projectDirFlag = lib.optionalString (projectDir != null)
+        ''--project-directory "${projectDir}" '';
       composeFileFlags = lib.concatStringsSep " " (map (f:
         ''-f "${composeDir}/${f}"''
       ) composeFiles);
@@ -127,16 +133,16 @@ rec {
       # Cleanup on exit
       cleanup() {
         echo "Stopping ${serviceName}..."
-        docker compose ${composeFileFlags} down 2>/dev/null || true
+        docker compose ${projectDirFlag}${composeFileFlags} down 2>/dev/null || true
       }
       trap cleanup EXIT INT TERM
 
       # Start compose stack detached, wait for healthchecks
-      if ! docker compose ${composeFileFlags} up -d --build --wait; then
+      if ! docker compose ${projectDirFlag}${composeFileFlags} up -d --build --wait; then
         echo ""
         echo "Failed to start ${serviceName}. Container logs:"
         echo "---"
-        docker compose ${composeFileFlags} logs --tail=50 2>&1 || true
+        docker compose ${projectDirFlag}${composeFileFlags} logs --tail=50 2>&1 || true
         echo "---"
         exit 1
       fi
@@ -147,6 +153,6 @@ rec {
       ) urls)}
 
       # Stream logs in foreground
-      docker compose ${composeFileFlags} logs -f
+      docker compose ${projectDirFlag}${composeFileFlags} logs -f
     '';
 }
