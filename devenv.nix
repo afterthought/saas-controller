@@ -1539,6 +1539,54 @@ SECRETSPEC_EOF
                             fi
                             ;;
 
+                          undeploy)
+                            if [ -z "$SERVICE" ]; then
+                              echo "❌ Error: Service name required for undeploy" >&2
+                              echo "  Usage: sc undeploy <service>" >&2
+                              exit 1
+                            fi
+
+                            STATE_FILE="${config.git.root}/.saas-controller/deploy/$SERVICE/state.json"
+                            if [ ! -f "$STATE_FILE" ]; then
+                              echo "❌ Error: No deployment state found for $SERVICE" >&2
+                              echo "  Expected: $STATE_FILE" >&2
+                              exit 1
+                            fi
+
+                            PLATFORM=$(${pkgs.jq}/bin/jq -r '.platform' "$STATE_FILE")
+                            SVC_ID=$(${pkgs.jq}/bin/jq -r '.serviceIdentifier' "$STATE_FILE")
+                            COMPOSE_CMD=$(${pkgs.jq}/bin/jq -r '.composeCmd' "$STATE_FILE")
+
+                            echo "Undeploying: $SERVICE"
+
+                            case "$PLATFORM" in
+                              Darwin)
+                                launchctl bootout "gui/$(id -u)/$SVC_ID" 2>/dev/null || true
+                                rm -f "$HOME/Library/LaunchAgents/$SVC_ID.plist"
+                                echo "  Launchd agent removed: $SVC_ID"
+                                ;;
+                              Linux)
+                                systemctl --user disable --now "$SVC_ID" 2>/dev/null || true
+                                rm -f "$HOME/.config/systemd/user/$SVC_ID.service"
+                                systemctl --user daemon-reload
+                                echo "  Systemd service removed: $SVC_ID"
+                                ;;
+                              *)
+                                echo "  Warning: Unknown platform '$PLATFORM', skipping service removal" >&2
+                                ;;
+                            esac
+
+                            # Stop compose stack
+                            if [ -n "$COMPOSE_CMD" ]; then
+                              $COMPOSE_CMD down 2>/dev/null || true
+                            fi
+
+                            # Clean up state
+                            rm -f "$STATE_FILE"
+
+                            echo "✅ Service undeployed: $SERVICE"
+                            ;;
+
                           help|--help|-h|"")
                             cat <<EOF
             SaaS Controller - Unified interface for managing services
@@ -1549,6 +1597,7 @@ SECRETSPEC_EOF
             Commands:
               up              Start local dev services via docker-compose (default env: local)
               deploy          Deploy service(s) with pre/post hooks (default env: development)
+              undeploy        Remove a persistent service installed by deploy
               check-secrets   Validate secrets for all services
               help            Show this help message
 
@@ -1561,6 +1610,8 @@ SECRETSPEC_EOF
               sc deploy --environment production         # Deploy all to production
               sc deploy atlas3-dev-gateway -e edge       # Deploy specific service to edge
 
+              sc undeploy atlas3-dev-gateway             # Remove persistent service
+
               sc check-secrets                           # Check all service secrets
               sc check-secrets --tag tailscale           # Check only tailscale-tagged services
               sc check-secrets --service test-gateway    # Check specific service
@@ -1572,6 +1623,7 @@ SECRETSPEC_EOF
 
             Note: Deploy runs pre-hooks, deploys the service, then runs post-hooks automatically.
                   Deployment credentials must be in the environment (e.g., via CI secrets).
+                  For docker-compose provider, deploy installs a persistent launchd/systemd service.
             EOF
                             ;;
 

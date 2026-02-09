@@ -102,6 +102,28 @@ rec {
       }
     '';
 
+  # Build the `docker compose` command prefix with project-directory and file flags.
+  #
+  # Args:
+  #   composeDir: Nix string — path to the compose directory
+  #   composeFiles: List of compose file basenames. Default: ["docker-compose.yml"]
+  #   projectDir: Optional Nix string — override --project-directory.
+  #
+  # Returns: A string like "docker compose --project-directory /src -f /dir/a.yml -f /dir/b.yml"
+  mkComposeCommand = {
+    composeDir,
+    composeFiles ? [ "docker-compose.yml" ],
+    projectDir ? null,
+  }:
+    let
+      projectDirFlag = lib.optionalString (projectDir != null)
+        ''--project-directory "${projectDir}" '';
+      composeFileFlags = lib.concatStringsSep " " (map (f:
+        ''-f "${composeDir}/${f}"''
+      ) composeFiles);
+    in
+    "docker compose ${projectDirFlag}${composeFileFlags}";
+
   # Generate the compose lifecycle bash script (up/down/logs/error-dump/cleanup).
   #
   # Args:
@@ -123,26 +145,22 @@ rec {
     urls ? [],
   }:
     let
-      projectDirFlag = lib.optionalString (projectDir != null)
-        ''--project-directory "${projectDir}" '';
-      composeFileFlags = lib.concatStringsSep " " (map (f:
-        ''-f "${composeDir}/${f}"''
-      ) composeFiles);
+      composeCmd = mkComposeCommand { inherit composeDir composeFiles projectDir; };
     in
     ''
       # Cleanup on exit
       cleanup() {
         echo "Stopping ${serviceName}..."
-        docker compose ${projectDirFlag}${composeFileFlags} down 2>/dev/null || true
+        ${composeCmd} down 2>/dev/null || true
       }
       trap cleanup EXIT INT TERM
 
       # Start compose stack detached, wait for healthchecks
-      if ! docker compose ${projectDirFlag}${composeFileFlags} up -d --build --wait; then
+      if ! ${composeCmd} up -d --build --wait; then
         echo ""
         echo "Failed to start ${serviceName}. Container logs:"
         echo "---"
-        docker compose ${projectDirFlag}${composeFileFlags} logs --tail=50 2>&1 || true
+        ${composeCmd} logs --tail=50 2>&1 || true
         echo "---"
         exit 1
       fi
@@ -153,6 +171,6 @@ rec {
       ) urls)}
 
       # Stream logs in foreground
-      docker compose ${projectDirFlag}${composeFileFlags} logs -f
+      ${composeCmd} logs -f
     '';
 }
