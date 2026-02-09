@@ -1,51 +1,85 @@
 # Shared docker-compose + tailscale sidecar lifecycle library.
 #
 # Providers call these functions to build their compose stacks:
-#   mkTailscaleSidecar  — YAML snippet for the tailscale sidecar service
+#   mkComposeFile       — complete docker-compose.yml with tailscale sidecar + app services
 #   mkServeConfig       — serve-config.json from port-to-upstream mappings
 #   mkComposeLifecycle  — up/down/logs/error-dump/cleanup bash script
+#
+# File content functions (mkComposeFile, mkServeConfig) produce text with
+# docker-compose variable references (like TS_HOSTNAME, TS_CLIENT_SECRET).
+# Callers write these to disk via the writeFile helper which uses printf
+# to avoid bash variable expansion.
 
 { lib }:
 
-{
-  # Generate the tailscale sidecar service YAML block.
+rec {
+  # Write a Nix string to a file without bash variable expansion.
+  # Uses printf to avoid heredoc quoting issues with multi-line content.
   #
   # Args:
-  #   hostname: The tailscale hostname (e.g. "sc-abc12345-miniflux")
+  #   path: File path to write
+  #   content: Nix string (may contain ${VAR} for docker-compose interpolation)
   #
-  # Returns: A string of YAML (indented for embedding in a compose services: block)
-  mkTailscaleSidecar = hostname: ''
-    tailscale:
-      image: tailscale/tailscale:latest
-      hostname: ${hostname}
-      environment:
-        - TS_HOSTNAME=${hostname}
-        - TS_AUTHKEY=''${TS_CLIENT_SECRET}?ephemeral=true
-        - TS_EXTRA_ARGS=--advertise-tags=tag:sc-dev
-        - TS_SERVE_CONFIG=/config/serve.json
-        - TS_STATE_DIR=/var/lib/tailscale
-        - TS_USERSPACE=false
-      volumes:
-        - ./serve-config.json:/config/serve.json:ro
-        - ts-state:/var/lib/tailscale
-      cap_add:
-        - NET_ADMIN
-      devices:
-        - /dev/net/tun:/dev/net/tun
-      healthcheck:
-        test: ["CMD", "tailscale", "status"]
-        interval: 2s
-        timeout: 5s
-        retries: 10
-  '';
+  # Returns: Bash script snippet
+  writeFile = path: content:
+    "printf '%s' ${lib.escapeShellArg content} > \"${path}\"";
+
+  # Generate a complete docker-compose.yml with tailscale sidecar and app services.
+  #
+  # The sidecar uses these docker-compose variable interpolations from host env:
+  #   TS_HOSTNAME       — the tailscale node hostname (set by caller via export)
+  #   TS_CLIENT_SECRET  — OAuth client secret (injected by secretspec)
+  #
+  # Args:
+  #   appServices: YAML string defining app services (at 4-space indent level)
+  #   extraVolumes: list of volume name strings beyond ts-state (default: [])
+  #
+  # Returns: Complete docker-compose.yml content as a string.
+  mkComposeFile = { appServices, extraVolumes ? [] }:
+    let
+      allVolumes = [ "ts-state" ] ++ extraVolumes;
+      volumeLines = lib.concatMapStringsSep "\n" (v: "  ${v}:") allVolumes;
+    in
+    lib.concatStringsSep "\n" [
+      "services:"
+      "  tailscale:"
+      "    image: tailscale/tailscale:latest"
+      "    hostname: \${TS_HOSTNAME}"
+      "    environment:"
+      "      - TS_HOSTNAME=\${TS_HOSTNAME}"
+      "      - TS_AUTHKEY=\${TS_CLIENT_SECRET}?ephemeral=true"
+      "      - TS_EXTRA_ARGS=--advertise-tags=tag:sc-dev"
+      "      - TS_SERVE_CONFIG=/config/serve.json"
+      "      - TS_STATE_DIR=/var/lib/tailscale"
+      "      - TS_USERSPACE=false"
+      "    volumes:"
+      "      - ./serve-config.json:/config/serve.json:ro"
+      "      - ts-state:/var/lib/tailscale"
+      "    cap_add:"
+      "      - NET_ADMIN"
+      "    devices:"
+      "      - /dev/net/tun:/dev/net/tun"
+      "    healthcheck:"
+      "      test: [\"CMD\", \"tailscale\", \"status\"]"
+      "      interval: 2s"
+      "      timeout: 5s"
+      "      retries: 10"
+      ""
+      appServices
+      "volumes:"
+      volumeLines
+    ];
 
   # Generate serve-config.json content from port-to-upstream mappings.
+  #
+  # Uses the TS_CERT_DOMAIN placeholder — tailscale containerboot replaces
+  # it with the node's FQDN at startup.
   #
   # Args:
   #   entries: List of { port, upstream } attrsets
   #     e.g. [{ port = 443; upstream = "http://127.0.0.1:8080"; }]
   #
-  # Returns: A JSON string for serve-config.json
+  # Returns: A JSON string.
   mkServeConfig = entries:
     let
       tcpEntries = lib.concatStringsSep ",\n    " (map (e:
@@ -71,12 +105,11 @@
   # Generate the compose lifecycle bash script (up/down/logs/error-dump/cleanup).
   #
   # Args:
-  #   composeDir: Path to the directory containing docker-compose.yml
-  #   serviceName: Human-readable service name (for log messages)
-  #   composeFiles: List of compose file paths (relative to composeDir) for -f flags.
-  #                 Default: ["docker-compose.yml"]
+  #   composeDir: Nix string — path to the compose directory (baked in at eval time)
+  #   serviceName: Nix string — human-readable name for log messages
+  #   composeFiles: List of compose file basenames. Default: ["docker-compose.yml"]
   #   urls: List of { label, url } for printing HTTPS URLs after startup.
-  #         e.g. [{ label = "Docs"; url = "https://host.tailnet.ts.net:443"; }]
+  #         URL values can contain bash variable references (e.g. "$FQDN").
   #
   # Returns: A bash script string
   mkComposeLifecycle = {

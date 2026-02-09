@@ -1,5 +1,8 @@
 { pkgs, lib, config }:
 
+let
+  compose = import ../lib/docker-compose.nix { inherit lib; };
+in
 {
   # Secret profiles contributed by this provider
   secretProfiles = {
@@ -16,154 +19,100 @@
     let
       composeDir = "${config.git.root}/.saas-controller/compose/${serviceName}";
       sourceDir = "${config.git.root}/${service.providerConfig.path}";
+
+      # Volume strategy:
+      #   1. bind-mount host source for live reload
+      #   2. named volume preserves npm-installed modules from image build,
+      #      preventing the bind-mount from overwriting with host's node_modules
+      #
+      # Network strategy:
+      #   All app containers share the tailscale sidecar's network namespace.
+      #   Tailscale serve routes external HTTPS to internal HTTP ports.
+      composeContent = compose.mkComposeFile {
+        appServices = lib.concatStringsSep "\n" [
+          "  zuplo-api:"
+          "    build:"
+          "      context: ."
+          "      dockerfile: Dockerfile"
+          "    network_mode: service:tailscale"
+          "    depends_on:"
+          "      tailscale:"
+          "        condition: service_healthy"
+          "    volumes:"
+          "      - ${sourceDir}:/app"
+          "      - node_modules:/app/node_modules"
+          "    environment:"
+          "      - ZUDOKU_PUBLIC_SERVER_URL=https://\${FQDN}:8443"
+          "      - __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=\${FQDN}"
+          "    command: [\"npx\", \"zuplo\", \"dev\", \"--port\", \"30000\", \"--start-docs\", \"false\", \"--start-editor\", \"false\"]"
+          ""
+          "  zuplo-docs:"
+          "    build:"
+          "      context: ."
+          "      dockerfile: Dockerfile"
+          "    network_mode: service:tailscale"
+          "    depends_on:"
+          "      tailscale:"
+          "        condition: service_healthy"
+          "    volumes:"
+          "      - ${sourceDir}:/app"
+          "      - node_modules:/app/node_modules"
+          "    environment:"
+          "      - ZUDOKU_PUBLIC_SERVER_URL=https://\${FQDN}:443"
+          "      - __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=\${FQDN}"
+          "    command: [\"npx\", \"zuplo\", \"docs\", \"--port\", \"30001\"]"
+        ];
+        extraVolumes = [ "node_modules" ];
+      };
+
+      serveContent = compose.mkServeConfig [
+        { port = 443; upstream = "http://127.0.0.1:30001"; }
+        { port = 8443; upstream = "http://127.0.0.1:30000"; }
+      ];
     in
     ''
       set -euo pipefail
 
-      COMPOSE_DIR="${composeDir}"
-      mkdir -p "$COMPOSE_DIR"
+      mkdir -p "${composeDir}"
 
-      # Compute tailscale hostname and FQDN
-      TS_HOSTNAME="sc-''${SC_SLUG}-${serviceName}"
-      FQDN="''${TS_HOSTNAME}.''${SC_TAILNET}"
+      # Compute tailscale hostname and FQDN (exported for docker-compose interpolation)
+      export TS_HOSTNAME="sc-$SC_SLUG-${serviceName}"
+      export FQDN="$TS_HOSTNAME.$SC_TAILNET"
 
       # Copy all package.json files (root + workspaces) and lockfile into compose context
-      cp "${sourceDir}/package.json" "$COMPOSE_DIR/package.json"
-      cp "${sourceDir}/package-lock.json" "$COMPOSE_DIR/package-lock.json" 2>/dev/null \
-        || cp "${sourceDir}/npm-shrinkwrap.json" "$COMPOSE_DIR/package-lock.json" 2>/dev/null \
+      cp "${sourceDir}/package.json" "${composeDir}/package.json"
+      cp "${sourceDir}/package-lock.json" "${composeDir}/package-lock.json" 2>/dev/null \
+        || cp "${sourceDir}/npm-shrinkwrap.json" "${composeDir}/package-lock.json" 2>/dev/null \
         || true
       # Copy workspace package.json files (e.g. docs/) preserving directory structure
       (cd "${sourceDir}" && find . -mindepth 2 -name package.json -not -path '*/node_modules/*' -exec sh -c '
-        mkdir -p "'"$COMPOSE_DIR"'/$(dirname "$1")"
-        cp "$1" "'"$COMPOSE_DIR"'/$1"
+        mkdir -p "${composeDir}/$(dirname "$1")"
+        cp "$1" "${composeDir}/$1"
       ' _ {} \;)
 
       # Generate Dockerfile (shared by both services)
-      # Installs all workspace dependencies at build time.
-      cat > "$COMPOSE_DIR/Dockerfile" <<'DOCKERFILE'
+      cat > "${composeDir}/Dockerfile" <<'DOCKERFILE'
       FROM node:22
       WORKDIR /app
       COPY . .
       RUN npm install
       DOCKERFILE
 
-      # Generate serve-config.json for tailscale HTTPS routing
-      # Uses TS_CERT_DOMAIN placeholder — containerboot replaces it with the node's FQDN
-      cat > "$COMPOSE_DIR/serve-config.json" <<'SERVECONFIG'
-      {
-        "TCP": {
-          "443": { "HTTPS": true },
-          "8443": { "HTTPS": true }
-        },
-        "Web": {
-          "''${TS_CERT_DOMAIN}:443": {
-            "Handlers": { "/": { "Proxy": "http://127.0.0.1:30001" } }
-          },
-          "''${TS_CERT_DOMAIN}:8443": {
-            "Handlers": { "/": { "Proxy": "http://127.0.0.1:30000" } }
-          }
-        }
-      }
-      SERVECONFIG
+      # Generate serve-config.json and docker-compose.yml
+      ${compose.writeFile "${composeDir}/serve-config.json" serveContent}
+      ${compose.writeFile "${composeDir}/docker-compose.yml" composeContent}
 
-      # Generate docker-compose.yml with tailscale sidecar + api + docs services
-      #
-      # Volume strategy:
-      #   1. "${sourceDir}:/app" — bind-mounts host source for live reload
-      #   2. "node_modules:/app/node_modules" — named volume preserves the
-      #      npm-installed modules from the image build, preventing the bind-mount
-      #      from overwriting them with the host's (possibly empty) node_modules
-      #
-      # Network strategy:
-      #   All app containers share the tailscale sidecar's network namespace.
-      #   Tailscale serve routes external HTTPS to internal HTTP ports.
-      cat > "$COMPOSE_DIR/docker-compose.yml" <<COMPOSEFILE
-      services:
-        tailscale:
-          image: tailscale/tailscale:latest
-          hostname: $TS_HOSTNAME
-          environment:
-            - TS_HOSTNAME=$TS_HOSTNAME
-            - TS_AUTHKEY=\''${TS_CLIENT_SECRET}?ephemeral=true
-            - TS_EXTRA_ARGS=--advertise-tags=tag:sc-dev
-            - TS_SERVE_CONFIG=/config/serve.json
-            - TS_STATE_DIR=/var/lib/tailscale
-            - TS_USERSPACE=false
-          volumes:
-            - ./serve-config.json:/config/serve.json:ro
-            - ts-state:/var/lib/tailscale
-          cap_add:
-            - NET_ADMIN
-          devices:
-            - /dev/net/tun:/dev/net/tun
-          healthcheck:
-            test: ["CMD", "tailscale", "status"]
-            interval: 2s
-            timeout: 5s
-            retries: 10
-
-        zuplo-api:
-          build:
-            context: .
-            dockerfile: Dockerfile
-          network_mode: service:tailscale
-          depends_on:
-            tailscale:
-              condition: service_healthy
-          volumes:
-            - ${sourceDir}:/app
-            - node_modules:/app/node_modules
-          environment:
-            - ZUDOKU_PUBLIC_SERVER_URL=https://$FQDN:8443
-            - __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=$FQDN
-          command: ["npx", "zuplo", "dev", "--port", "30000", "--start-docs", "false", "--start-editor", "false"]
-
-        zuplo-docs:
-          build:
-            context: .
-            dockerfile: Dockerfile
-          network_mode: service:tailscale
-          depends_on:
-            tailscale:
-              condition: service_healthy
-          volumes:
-            - ${sourceDir}:/app
-            - node_modules:/app/node_modules
-          environment:
-            - ZUDOKU_PUBLIC_SERVER_URL=https://$FQDN:443
-            - __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=$FQDN
-          command: ["npx", "zuplo", "docs", "--port", "30001"]
-
-      volumes:
-        node_modules:
-        ts-state:
-      COMPOSEFILE
-
-      # Cleanup on exit
-      cleanup() {
-        echo "Stopping ${serviceName}..."
-        docker compose -f "$COMPOSE_DIR/docker-compose.yml" down 2>/dev/null || true
-      }
-      trap cleanup EXIT INT TERM
-
-      # Start compose stack detached, wait for healthchecks
-      if ! docker compose -f "$COMPOSE_DIR/docker-compose.yml" up -d --build --wait; then
-        echo ""
-        echo "❌ Failed to start ${serviceName}. Container logs:"
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        docker compose -f "$COMPOSE_DIR/docker-compose.yml" logs --tail=50 2>&1 || true
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        exit 1
-      fi
-
-      # Print HTTPS URLs
-      export DEVSERVER_URL="https://''${FQDN}:443"
+      # Print URL
+      export DEVSERVER_URL="https://$FQDN:443"
       echo "DEVSERVER_URL: $DEVSERVER_URL"
-      echo "  Docs: https://''${FQDN}:443"
-      echo "  API:  https://''${FQDN}:8443"
 
-      # Stream logs in foreground
-      docker compose -f "$COMPOSE_DIR/docker-compose.yml" logs -f
+      ${compose.mkComposeLifecycle {
+        inherit composeDir serviceName;
+        urls = [
+          { label = "Docs"; url = "https://$FQDN:443"; }
+          { label = "API"; url = "https://$FQDN:8443"; }
+        ];
+      }}
     '';
 
   # Provision top-level Zuplo project (one-time operation)
