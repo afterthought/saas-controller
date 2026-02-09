@@ -15,9 +15,14 @@
       path = "examples/test-gateway";
     };
     environments = {
-      local = {
-        enable = true;
+      local.enable = true;
+    };
+    secretspec = {
+      saToken = "client-willdan";
+      environments = {
+        local = { serviceProfiles = [ "tailscale" ]; };
       };
+      tags = [ "tailscale" "zuplo" ];
     };
   };
 }
