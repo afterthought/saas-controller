@@ -1251,6 +1251,21 @@ SECRETSPEC_EOF
               let
                 secretspecCfg = service.secretspec;
                 tags = secretspecCfg.tags;
+                hasSAToken = secretspecCfg.saToken != null;
+                saSecretName = if hasSAToken then toSASecretName secretspecCfg.saToken else "";
+                saTokensDir = config.saas-controller.saTokensDir;
+
+                # SA token swap snippet for check-secrets (same as sc up)
+                saSwapSnippet = lib.optionalString hasSAToken ''
+                  # SA token swap: retrieve ${saSecretName} from keyring
+                  SA_TOKEN="$(cd "${saTokensDir}" && ${pkgs.secretspec}/bin/secretspec get --provider keyring --profile default ${saSecretName})"
+                  if [ -z "$SA_TOKEN" ]; then
+                    echo "❌ Error: Failed to retrieve ${saSecretName} from keyring for ${serviceName}." >&2
+                    echo "  Run 'store-sa-tokens' to populate SA tokens in the keyring." >&2
+                    exit 1
+                  fi
+                  export OP_SERVICE_ACCOUNT_TOKEN="$SA_TOKEN"
+                '';
               in ''
                 # Filter by service name
                 if [ -n "$FILTER_SERVICE" ] && [ "$FILTER_SERVICE" != "${serviceName}" ]; then
@@ -1262,19 +1277,42 @@ SECRETSPEC_EOF
                   SERVICES_CHECKED=$((SERVICES_CHECKED + 1))
                   echo "📋 Checking: ${serviceName}"
 
-                  cd ${config.git.root}/.saas-controller/secretspec/${serviceName}
+                  # Run in subshell to scope SA token swap per-service
+                  CHECK_OUTPUT=$(
+                    ${saSwapSnippet}
+                    cd ${config.git.root}/.saas-controller/secretspec/${serviceName}
 
-                  ${lib.concatStringsSep "\n" (lib.mapAttrsToList (envName: envCfg: ''
-                    TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
-                    if ${pkgs.secretspec}/bin/secretspec check --profile ${envName} 2>&1; then
-                      echo "  ✅ ${serviceName}/${envName}: OK"
-                      SUMMARY="$SUMMARY\n  ✅ ${serviceName}/${envName}"
-                    else
-                      echo "  ❌ ${serviceName}/${envName}: FAILED"
-                      SUMMARY="$SUMMARY\n  ❌ ${serviceName}/${envName}"
-                      TOTAL_ERRORS=$((TOTAL_ERRORS + 1))
-                    fi
-                  '') secretspecCfg.environments)}
+                    ${lib.concatStringsSep "\n" (lib.mapAttrsToList (envName: envCfg: ''
+                      if ${pkgs.secretspec}/bin/secretspec check --profile ${envName} 2>&1; then
+                        echo "OK:${serviceName}/${envName}"
+                      else
+                        echo "FAIL:${serviceName}/${envName}"
+                      fi
+                    '') secretspecCfg.environments)}
+                  )
+
+                  # Parse subshell results back into main shell counters
+                  while IFS= read -r line; do
+                    case "$line" in
+                      OK:*)
+                        TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+                        RESULT="''${line#OK:}"
+                        echo "  ✅ $RESULT: OK"
+                        SUMMARY="$SUMMARY\n  ✅ $RESULT"
+                        ;;
+                      FAIL:*)
+                        TOTAL_CHECKS=$((TOTAL_CHECKS + 1))
+                        RESULT="''${line#FAIL:}"
+                        echo "  ❌ $RESULT: FAILED"
+                        SUMMARY="$SUMMARY\n  ❌ $RESULT"
+                        TOTAL_ERRORS=$((TOTAL_ERRORS + 1))
+                        ;;
+                      *)
+                        # Pass through secretspec check output (e.g. error messages)
+                        echo "  $line"
+                        ;;
+                    esac
+                  done <<< "$CHECK_OUTPUT"
 
                   echo ""
                 fi
