@@ -1,6 +1,16 @@
 { pkgs, lib, config }:
 
 {
+  # Secret profiles contributed by this provider
+  secretProfiles = {
+    zuplo = {
+      ZUPLO_API_KEY = {
+        description = "Zuplo API key for deployments";
+        providers = [ "saas-controller" ];
+      };
+    };
+  };
+
   # Local dev lifecycle: generate docker-compose.yml with api + docs services
   up = serviceName: service:
     let

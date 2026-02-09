@@ -6,6 +6,16 @@
 { pkgs, lib, config }:
 
 {
+  # OPTIONAL: Secret profiles contributed by this provider
+  # Profiles declared here are automatically merged into saas-controller.secretProfiles.
+  # Services reference them via secretspec.environments.<env>.serviceProfiles.
+  # secretProfiles = {
+  #   my-provider = {
+  #     MY_API_KEY = { description = "API key for my-provider"; providers = [ "saas-controller" ]; };
+  #     MY_SECRET = { description = "Shared secret"; required = false; providers = [ "saas-controller" ]; };
+  #   };
+  # };
+
   # OPTIONAL: Local dev lifecycle via docker-compose
   # Called by: sc up <service>
   # Args:

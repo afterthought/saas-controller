@@ -27,6 +27,15 @@ let
   # Merge builtin and external providers (external can override builtin if needed)
   providers = builtinProviders // externalProviders;
 
+  # Collect secret profiles contributed by providers
+  # Providers can optionally export a secretProfiles attrset
+  providerSecretProfiles = lib.foldlAttrs
+    (acc: _name: provider:
+      if provider ? secretProfiles then acc // provider.secretProfiles else acc
+    )
+    { }
+    providers;
+
   # Import task helpers
   helpers = import ./lib/helpers.nix { inherit pkgs lib config providers; };
 
@@ -842,6 +851,16 @@ SECRETSPEC_EOF
 
     in
     {
+      # Merge provider-contributed secret profiles into controller config
+      # Providers declare profiles via secretProfiles attr (e.g., zuplo.nix → "zuplo" profile)
+      # Uses mkDefault so consumers can override with explicit secretProfiles config
+      saas-controller.secretProfiles = lib.mapAttrs
+        (_profileName: secrets: lib.mapAttrs
+          (_secretName: secretDef: lib.mkDefault secretDef)
+          secrets
+        )
+        providerSecretProfiles;
+
       # Test service configuration (for local development/testing of the module)
       saas-controller.services.test-gateway = {
         enable = true;
@@ -857,9 +876,9 @@ SECRETSPEC_EOF
         };
         secretspec = {
           environments = {
-            local = { serviceProfiles = [ "tailscale" ]; };
+            local = { serviceProfiles = [ "tailscale" "zuplo" ]; };
           };
-          tags = [ "tailscale" ];
+          tags = [ "tailscale" "zuplo" ];
         };
       };
 
