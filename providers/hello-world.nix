@@ -13,102 +13,65 @@
 
 { pkgs, lib, config }:
 
+let
+  compose = import ../lib/docker-compose.nix { inherit lib; };
+in
 {
   # Local dev lifecycle: generate docker-compose.yml and run the stack
   up = serviceName: service:
     let
       composeDir = "${config.git.root}/.saas-controller/compose/${serviceName}";
       sourceDir = "${config.git.root}/${service.providerConfig.path}";
+
+      composeContent = compose.mkComposeFile {
+        appServices = lib.concatStringsSep "\n" [
+          "  ${serviceName}:"
+          "    build:"
+          "      context: ."
+          "      dockerfile: Dockerfile"
+          "    network_mode: service:tailscale"
+          "    depends_on:"
+          "      tailscale:"
+          "        condition: service_healthy"
+          "    volumes:"
+          "      - ${sourceDir}:/app"
+          "    environment:"
+          "      - PORT=3000"
+        ];
+      };
+
+      serveContent = compose.mkServeConfig [
+        { port = 443; upstream = "http://127.0.0.1:3000"; }
+      ];
     in
     ''
       set -euo pipefail
 
-      COMPOSE_DIR="${composeDir}"
-      mkdir -p "$COMPOSE_DIR"
+      mkdir -p "${composeDir}"
 
-      # Compute tailscale hostname and FQDN
-      TS_HOSTNAME="sc-''${SC_SLUG}-${serviceName}"
-      FQDN="''${TS_HOSTNAME}.''${SC_TAILNET}"
+      # Compute tailscale hostname and FQDN (exported for docker-compose interpolation)
+      export TS_HOSTNAME="sc-$SC_SLUG-${serviceName}"
+      export FQDN="$TS_HOSTNAME.$SC_TAILNET"
 
       # Generate Dockerfile
-      cat > "$COMPOSE_DIR/Dockerfile" <<'DOCKERFILE'
+      cat > "${composeDir}/Dockerfile" <<'DOCKERFILE'
       FROM node:22
       WORKDIR /app
       CMD ["node", "server.mjs"]
       DOCKERFILE
 
-      # Generate serve-config.json for tailscale HTTPS routing
-      cat > "$COMPOSE_DIR/serve-config.json" <<SERVECONFIG
-      {
-        "TCP": {
-          "443": { "HTTPS": true }
-        },
-        "Web": {
-          "$TS_HOSTNAME:443": {
-            "Handlers": { "/": { "Proxy": "http://127.0.0.1:3000" } }
-          }
-        }
-      }
-      SERVECONFIG
+      # Generate serve-config.json and docker-compose.yml
+      ${compose.writeFile "${composeDir}/serve-config.json" serveContent}
+      ${compose.writeFile "${composeDir}/docker-compose.yml" composeContent}
 
-      # Generate docker-compose.yml with tailscale sidecar
-      cat > "$COMPOSE_DIR/docker-compose.yml" <<COMPOSEFILE
-      services:
-        tailscale:
-          image: tailscale/tailscale:latest
-          hostname: $TS_HOSTNAME
-          environment:
-            - TS_HOSTNAME=$TS_HOSTNAME
-            - TS_AUTHKEY=\''${TS_CLIENT_SECRET}?ephemeral=true
-            - TS_SERVE_CONFIG=/config/serve.json
-            - TS_STATE_DIR=/var/lib/tailscale
-            - TS_USERSPACE=false
-          volumes:
-            - ./serve-config.json:/config/serve.json:ro
-            - ts-state:/var/lib/tailscale
-          cap_add:
-            - NET_ADMIN
-          devices:
-            - /dev/net/tun:/dev/net/tun
-          healthcheck:
-            test: ["CMD", "tailscale", "status"]
-            interval: 2s
-            timeout: 5s
-            retries: 10
-
-        ${serviceName}:
-          build:
-            context: .
-            dockerfile: Dockerfile
-          network_mode: service:tailscale
-          depends_on:
-            tailscale:
-              condition: service_healthy
-          volumes:
-            - ${sourceDir}:/app
-          environment:
-            - PORT=3000
-
-      volumes:
-        ts-state:
-      COMPOSEFILE
-
-      # Cleanup on exit
-      cleanup() {
-        echo "Stopping ${serviceName}..."
-        docker compose -f "$COMPOSE_DIR/docker-compose.yml" down 2>/dev/null || true
-      }
-      trap cleanup EXIT INT TERM
-
-      # Start compose stack detached, wait for healthchecks
-      docker compose -f "$COMPOSE_DIR/docker-compose.yml" up -d --build --wait
-
-      # Print HTTPS URL
-      export DEVSERVER_URL="https://''${FQDN}:443"
+      # Print URL
+      export DEVSERVER_URL="https://$FQDN:443"
       echo "DEVSERVER_URL: $DEVSERVER_URL"
 
-      # Stream logs in foreground
-      docker compose -f "$COMPOSE_DIR/docker-compose.yml" logs -f
+      ${compose.mkComposeLifecycle {
+        inherit composeDir serviceName;
+        urls = [{ label = "HTTPS"; url = "https://$FQDN:443"; }];
+      }}
     '';
 
   provisionProject = serviceName: service: ''

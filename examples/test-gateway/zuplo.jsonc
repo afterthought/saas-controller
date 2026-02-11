@@ -1,6 +1,4 @@
 {
-  // Zuplo configuration
   "version": 1,
-  "project": "test-gateway",
-  "compatibilityDate": "2024-09-02"
+  "compatibilityDate": "2025-02-06"
 }

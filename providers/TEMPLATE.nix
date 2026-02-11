@@ -6,6 +6,22 @@
 { pkgs, lib, config }:
 
 {
+  # OPTIONAL: Secret profiles contributed by this provider
+  # Profiles declared here are automatically merged into saas-controller.secretProfiles.
+  # When a service uses this provider, the provider's profiles are AUTO-INCLUDED
+  # in the service's secretspec — no need to add them to serviceProfiles manually.
+  # secretProfiles = {
+  #   my-provider = {
+  #     MY_API_KEY = { description = "API key for my-provider"; providers = [ "saas-controller" ]; };
+  #     MY_SECRET = { description = "Shared secret"; required = false; providers = [ "saas-controller" ]; };
+  #   };
+  # };
+  #
+  # For services needing secrets from a client-scoped 1Password vault (not the
+  # default SA token), set secretspec.saToken on the service:
+  #   secretspec.saToken = "client-willdan";  # retrieves OP_SA_CLIENT_WILLDAN from keyring
+  # sc up will swap the SA token before injecting secrets for that service.
+
   # OPTIONAL: Local dev lifecycle via docker-compose
   # Called by: sc up <service>
   # Args:
@@ -45,9 +61,9 @@
   #   - service: Full service configuration object
   #   - environment: Target environment name (e.g., "production", "edge")
   #   - envConfig: Environment-specific configuration
-  #   - profile: SaaS controller profile name (e.g., "dev-saas-controller")
-  #   - provider: SaaS controller provider name (e.g., "onepassword")
-  # Note: Control plane secrets (API keys, etc.) are provided by wrapper in helpers.nix
+  #   - profile: SaaS controller profile name (legacy, unused)
+  #   - provider: SaaS controller provider alias (legacy, unused)
+  # Note: Control plane secrets must be in the environment (caller's responsibility)
   # Returns: Bash script that deploys the service
   deploy = serviceName: service: environment: envConfig: profile: provider: ''
     echo "  Deploying ${serviceName} to ${environment}"
