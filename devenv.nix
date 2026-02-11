@@ -924,6 +924,109 @@ SECRETSPEC_EOF
         ) secretspecServices)}
       '';
 
+      # ── Secret status table helpers ─────────────────────────────────────
+      # Pad a string to a fixed width with trailing spaces
+      statusPad = width: s:
+        let len = builtins.stringLength s;
+        in s + lib.concatStrings (builtins.genList (_: " ") (if width > len then width - len else 0));
+
+      # Pad a display-width string, accounting for multi-byte UTF-8.
+      # Checkmark ✓ is 3 bytes but 1 display column; add 2 extra spaces.
+      statusPadCell = width: s: hasCheck:
+        let
+          extraBytes = if hasCheck then 2 else 0;
+          byteLen = builtins.stringLength s;
+          displayLen = byteLen - extraBytes;
+          needed = if width > displayLen then width - displayLen else 0;
+        in s + lib.concatStrings (builtins.genList (_: " ") needed);
+
+      # For a given service, collect the union of all secrets across all its
+      # environments. Returns { secretName = profileName; } where profileName
+      # is the source profile or "(inline)" for per-instance secrets.
+      collectServiceSecrets = serviceName: service:
+        let
+          secretspecCfg = service.secretspec;
+          profiles = config.saas-controller.secretProfiles;
+          providerObj = providers.${service.provider} or {};
+          providerProfileNames = lib.attrNames (providerObj.secretProfiles or {});
+        in
+        lib.foldlAttrs (acc: envName: envCfg:
+          let
+            allProfileNames = lib.unique (providerProfileNames ++ envCfg.serviceProfiles);
+
+            # Collect secrets from profiles, tracking which profile they came from
+            profileSecretsWithSource = lib.foldl (innerAcc: profileName:
+              let
+                profileSecrets = profiles.${profileName} or {};
+                newEntries = lib.filterAttrs (name: _: ! (innerAcc ? ${name})) profileSecrets;
+                tagged = lib.mapAttrs (_: _: profileName) newEntries;
+              in
+              innerAcc // tagged
+            ) {} allProfileNames;
+
+            # Inline secrets not already covered by profiles
+            inlineSecrets = envCfg.secrets or {};
+            extraEntries = lib.mapAttrs (_: _: "(inline)")
+              (lib.filterAttrs (name: _: ! (profileSecretsWithSource ? ${name})) inlineSecrets);
+
+            envSecrets = profileSecretsWithSource // extraEntries;
+
+            # Merge into accumulator (first occurrence wins across environments)
+            newSecrets = lib.filterAttrs (name: _: ! (acc ? ${name})) envSecrets;
+          in
+          acc // newSecrets
+        ) {} secretspecCfg.environments;
+
+      # Collect secrets for all services: { serviceName = { secretName = profileName; }; }
+      allServiceSecrets = lib.mapAttrs collectServiceSecrets secretspecServices;
+
+      # Union of all secret names across all services (sorted)
+      allSecretNames = lib.sort builtins.lessThan (lib.unique (lib.concatMap
+        (secrets: lib.attrNames secrets)
+        (lib.attrValues allServiceSecrets)
+      ));
+
+      # For each secret, find which profile it comes from (first occurrence across services)
+      secretProfileMap = lib.foldl (acc: secretName:
+        if acc ? ${secretName} then acc
+        else
+          let
+            source = lib.findFirst (svcSecrets: svcSecrets ? ${secretName})
+              {} (lib.attrValues allServiceSecrets);
+          in
+          acc // { ${secretName} = source.${secretName} or "?"; }
+      ) {} allSecretNames;
+
+      # Service column definitions with dynamic widths
+      serviceNames = lib.attrNames secretspecServices;
+      serviceColWidth = name: let len = builtins.stringLength name; in if len < 10 then 10 else len + 2;
+
+      # Column widths
+      secretColWidth = 36;
+      profileColWidth = 20;
+
+      # Generate a single table row for one secret
+      mkStatusRow = secretName:
+        let
+          profile = secretProfileMap.${secretName} or "?";
+          checks = lib.concatStrings (map (svcName:
+            let
+              width = serviceColWidth svcName;
+              has = (allServiceSecrets.${svcName} or {}) ? ${secretName};
+            in statusPadCell width (if has then "✓" else " ") has
+          ) serviceNames);
+        in "${statusPad secretColWidth secretName} ${statusPad profileColWidth profile} ${checks}";
+
+      allStatusRows = map mkStatusRow allSecretNames;
+
+      statusHeaderLine =
+        let svcHeaders = lib.concatStrings (map (name: statusPad (serviceColWidth name) name) serviceNames);
+        in "${statusPad secretColWidth "Secret"} ${statusPad profileColWidth "Profile"} ${svcHeaders}";
+
+      statusSeparatorWidth = secretColWidth + 1 + profileColWidth + 1
+        + lib.foldl' (acc: name: acc + serviceColWidth name) 0 serviceNames;
+      statusSeparatorLine = lib.concatStrings (builtins.genList (_: "─") statusSeparatorWidth);
+
     in
     {
       # Merge built-in + provider-contributed secret profiles into controller config
@@ -1332,6 +1435,20 @@ SECRETSPEC_EOF
           '';
         };
 
+        # Script: sc-secret-status
+        # Display secret-to-service mapping table (computed at Nix eval time)
+        sc-secret-status = {
+          description = "Display secret-to-service mapping table";
+          exec = ''
+            echo "SaaS Controller Secret Status"
+            echo "Secrets derived from secretProfiles + per-service secretspec config"
+            echo ""
+            echo "${statusHeaderLine}"
+            echo "${statusSeparatorLine}"
+            ${lib.concatStringsSep "\n" (map (row: "echo '${row}'") allStatusRows)}
+          '';
+        };
+
         # Script: sc - Unified SaaS Controller interface
         # Usage: sc <command> [service] [--environment <env>]
         sc = {
@@ -1346,6 +1463,10 @@ SECRETSPEC_EOF
                         case "$COMMAND" in
                           check-secrets)
                             sc-check-secrets "$@"
+                            exit $?
+                            ;;
+                          secret-status)
+                            sc-secret-status
                             exit $?
                             ;;
                         esac
@@ -1599,6 +1720,7 @@ SECRETSPEC_EOF
               deploy          Deploy service(s) with pre/post hooks (default env: development)
               undeploy        Remove a persistent service installed by deploy
               check-secrets   Validate secrets for all services
+              secret-status   Show secret-to-service mapping table
               help            Show this help message
 
             Examples:
@@ -1615,6 +1737,8 @@ SECRETSPEC_EOF
               sc check-secrets                           # Check all service secrets
               sc check-secrets --tag tailscale           # Check only tailscale-tagged services
               sc check-secrets --service test-gateway    # Check specific service
+
+              sc secret-status                           # Show secret-to-service mapping
 
             Options:
               --environment, -e <env>   Target environment (local, development, edge, production)
