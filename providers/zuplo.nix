@@ -57,7 +57,7 @@ in
           "      - ${sourceDir}:/app"
           "      - node_modules:/app/node_modules"
           "    environment:"
-          "      - ZUDOKU_PUBLIC_SERVER_URL=https://\${FQDN}:8443"
+          "      - ZUPLO_PUBLIC_SERVER_URL=https://\${FQDN}:8443"
           "      - __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=\${FQDN}"
           "    command: [\"npx\", \"zuplo\", \"docs\", \"--port\", \"30001\"]"
         ];
