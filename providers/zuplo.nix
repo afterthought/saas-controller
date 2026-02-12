@@ -101,11 +101,11 @@ in
       ' _ {} \;)
 
       # Generate .env in source dir (Zuplo/Zudoku reads from project root .env)
-      cat > "${sourceDir}/.env" <<DOTENV
-ZUPLO_PUBLIC_SERVER_URL=https://$FQDN:8443
-ZUDOKU_PUBLIC_AUTH_CLIENT_ID=''${ZUDOKU_PUBLIC_AUTH_CLIENT_ID:-22426e52-307b-4bf0-92c7-6f978f78a966}
-ZUDOKU_PUBLIC_AUTH_ISSUER=''${ZUDOKU_PUBLIC_AUTH_ISSUER:-https://app-5lp8mgkiydtb.us.frontegg.com}
-DOTENV
+      {
+        echo "ZUPLO_PUBLIC_SERVER_URL=https://$FQDN:8443"
+        echo "ZUDOKU_PUBLIC_AUTH_CLIENT_ID=''${ZUDOKU_PUBLIC_AUTH_CLIENT_ID:-22426e52-307b-4bf0-92c7-6f978f78a966}"
+        echo "ZUDOKU_PUBLIC_AUTH_ISSUER=''${ZUDOKU_PUBLIC_AUTH_ISSUER:-https://app-5lp8mgkiydtb.us.frontegg.com}"
+      } > "${sourceDir}/.env"
 
       # Generate Dockerfile (shared by both services)
       cat > "${composeDir}/Dockerfile" <<'DOCKERFILE'
