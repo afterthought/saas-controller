@@ -73,6 +73,12 @@ in
             default = [ ];
             description = "List of secretspec providers that can supply this secret";
           };
+
+          default = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            description = "Default value for this secret (used when no provider supplies it)";
+          };
         };
       }));
       default = { };
@@ -847,8 +853,10 @@ in
           reqLine = lib.optionalString (!secretDef.required) ", required = false";
           provLine = lib.optionalString (secretDef.providers != [ ])
             ", providers = [${lib.concatMapStringsSep ", " (p: "\"${p}\"") secretDef.providers}]";
+          defLine = lib.optionalString (secretDef.default != null)
+            ", default = \"${secretDef.default}\"";
         in
-        "${secretName} = { ${descLine}${reqLine}${provLine} }";
+        "${secretName} = { ${descLine}${reqLine}${provLine}${defLine} }";
 
       # Generate secretspec.toml content for a service
       # Generate secretspec.toml content for a service.

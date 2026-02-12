@@ -6,10 +6,22 @@ in
 {
   # Secret profiles contributed by this provider
   secretProfiles = {
-    zuplo = {
-      ZUPLO_API_KEY = {
-        description = "Zuplo API key for deployments";
+    # Zuplo deploy credentials (currently empty — deploy uses npx zuplo CLI auth)
+    zuplo = { };
+
+    # Zudoku docs authentication (Frontegg OAuth)
+    zudoku = {
+      ZUDOKU_PUBLIC_AUTH_CLIENT_ID = {
+        description = "Frontegg OAuth client ID for Zudoku docs authentication";
+        required = false;
         providers = [ "saas-controller" ];
+        default = "22426e52-307b-4bf0-92c7-6f978f78a966";
+      };
+      ZUDOKU_PUBLIC_AUTH_ISSUER = {
+        description = "Frontegg issuer URL for Zudoku docs authentication";
+        required = false;
+        providers = [ "saas-controller" ];
+        default = "https://app-5lp8mgkiydtb.us.frontegg.com";
       };
     };
   };
@@ -57,7 +69,6 @@ in
           "      - ${sourceDir}:/app"
           "      - node_modules:/app/node_modules"
           "    environment:"
-          "      - ZUPLO_PUBLIC_SERVER_URL=https://\${FQDN}:8443"
           "      - __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=\${FQDN}"
           "    command: [\"npx\", \"zuplo\", \"docs\", \"--port\", \"30001\"]"
         ];
@@ -88,6 +99,13 @@ in
         mkdir -p "${composeDir}/$(dirname "$1")"
         cp "$1" "${composeDir}/$1"
       ' _ {} \;)
+
+      # Generate .env in source dir (Zuplo/Zudoku reads from project root .env)
+      cat > "${sourceDir}/.env" <<DOTENV
+ZUPLO_PUBLIC_SERVER_URL=https://$FQDN:8443
+ZUDOKU_PUBLIC_AUTH_CLIENT_ID=''${ZUDOKU_PUBLIC_AUTH_CLIENT_ID:-22426e52-307b-4bf0-92c7-6f978f78a966}
+ZUDOKU_PUBLIC_AUTH_ISSUER=''${ZUDOKU_PUBLIC_AUTH_ISSUER:-https://app-5lp8mgkiydtb.us.frontegg.com}
+DOTENV
 
       # Generate Dockerfile (shared by both services)
       cat > "${composeDir}/Dockerfile" <<'DOCKERFILE'
@@ -136,7 +154,7 @@ in
   '';
 
   # Deploy code/config to environment
-  # Control plane secrets (ZUPLO_API_KEY) are provided by wrapper in helpers.nix
+  # Control plane secrets are provided by wrapper in helpers.nix
   deploy = serviceName: service: environment: envConfig: profile: provider:
     let
       # Skip --environment flag for preview to allow Zuplo CLI to auto-detect branch
