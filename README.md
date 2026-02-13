@@ -1,38 +1,50 @@
 # SaaS Controller
 
-Multi-cloud service orchestration for [devenv](https://devenv.sh). Declarative service definitions with pluggable providers, runtimes, and network strategies.
+Multi-cloud service orchestration for [devenv](https://devenv.sh). Declarative service definitions with pluggable providers. Manages local dev with Tailscale HTTPS (`sc up`) and cloud deployment (`sc deploy`).
 
-## What it does
+> **For AI agents**: Install the skill with `npx skills add afterthought/saas-controller` for agent-optimized context.
+
+## What It Does
 
 SaaS Controller manages the lifecycle of cloud services:
 
-- **Provision** projects on cloud platforms (Zuplo, AWS, Cloudflare, etc.)
-- **Deploy** code to environments with pre/post hooks
-- **Run** services locally with dev-serve scripts
-- **Export** secrets from vaults to cloud providers
+- **Run locally** with real HTTPS URLs on your Tailscale tailnet (`sc up`)
+- **Deploy** code to environments with pre/post hooks (`sc deploy`)
+- **Validate secrets** across services and environments (`sc check-secrets`)
+- **Provision** projects on cloud platforms (one-time setup)
 
 ## Architecture
 
+Providers own the full service lifecycle. Each provider generates its own docker-compose stack with a Tailscale sidecar for HTTPS on the tailnet.
+
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    saas-controller                        │
-│                                                          │
-│  ┌──────────┐   ┌──────────┐   ┌──────────────────────┐ │
-│  │ Providers │   │ Runtimes │   │ Networks             │ │
-│  │ (WHAT)    │   │ (HOW)    │   │ (WHERE)              │ │
-│  ├──────────┤   ├──────────┤   ├──────────────────────┤ │
-│  │ zuplo    │   │ dev-mgr  │   │ tailscale (HTTPS)    │ │
-│  │ frontegg │   │ docker   │   │ localhost (local)    │ │
-│  │ datadog  │   │ launchd  │   │ [your own]           │ │
-│  │ secretspec│   │ [yours]  │   │                      │ │
-│  │ [yours]  │   │          │   │                      │ │
-│  └──────────┘   └──────────┘   └──────────────────────┘ │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                    saas-controller                         │
+│                                                           │
+│  ┌─────────────────────────────────────────────────────┐ │
+│  │                 Providers                            │ │
+│  │  Each provider owns up() + deploy()                 │ │
+│  ├─────────────────────────────────────────────────────┤ │
+│  │  zuplo          │ API gateway + docs portal         │ │
+│  │  docker-compose │ Generic compose stacks            │ │
+│  │  [your own]     │ via externalProviders             │ │
+│  └─────────────────────────────────────────────────────┘ │
+│                                                           │
+│  sc up topology (per service):                            │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │ docker-compose stack                                │  │
+│  │  ┌─────────────┐  ┌────────────────────────────┐   │  │
+│  │  │  tailscale   │  │  app container(s)          │   │  │
+│  │  │  sidecar     │◀─│  network_mode:             │   │  │
+│  │  │              │  │    service:tailscale        │   │  │
+│  │  │  HTTPS :443  │  │  PORT=3000                 │   │  │
+│  │  └─────────────┘  └────────────────────────────┘   │  │
+│  │  URL: https://sc-<slug>-<service>.<tailnet>         │  │
+│  └────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────┘
 ```
 
-**Providers** define WHAT to deploy (Zuplo gateways, Frontegg apps, etc.).
-**Runtimes** define HOW to run locally (dev-manager-mcp, docker-compose, launchd).
-**Networks** define WHERE to expose (Tailscale HTTPS, localhost-only).
+When you run `sc up`, each provider generates a compose stack in `.saas-controller/compose/<serviceName>/`. The stack includes a Tailscale sidecar container that joins your tailnet as an ephemeral node, providing HTTPS with valid certificates. App containers share the sidecar's network namespace. When you stop `sc up`, the ephemeral nodes auto-remove.
 
 ## Quick Start
 
@@ -56,136 +68,206 @@ imports = [ inputs.saas-controller.outPath ];
 
 ### 2. Configure a service
 
+Here's a minimal hello-world service:
+
 ```nix
 # devenv.nix
-saas-controller.services.my-gateway = {
-  enable = true;
-  provider = "zuplo";
-  providerConfig = {
-    project = "my-project";
-    account = "my-account";
-    path = "services/my-gateway";
+{ pkgs, lib, config, ... }:
+{
+  saas-controller.services.hello-world = {
+    enable = true;
+    provider = "hello-world";
+    providerConfig = {
+      path = "examples/hello-world";  # dir with server.mjs + Dockerfile
+    };
+    environments = {
+      local.enable = true;
+    };
   };
-
-  environments = {
-    local.enable = true;
-    edge = { enable = true; autodeploy = true; };
-    main = { enable = true; autodeploy = false; };
-  };
-
-  run.secretSource = "onepassword://user@vault";
-};
+}
 ```
 
 ### 3. Use it
 
 ```bash
-# Start local dev servers
-sc up
-
-# Deploy to edge
-sc deploy my-gateway -e edge
-
-# Deploy all services to production
-sc deploy -e main
+sc up              # Starts compose stack with tailscale sidecar
+                   # Prints: https://sc-<slug>-hello-world.<tailnet>:443
 ```
 
-## Runtime + Network Configuration
+## Full Example: Zuplo Gateway with Secrets
 
-### Global defaults
+A more complete example with a Zuplo API gateway, multiple environments, and secret management:
 
 ```nix
-saas-controller = {
-  defaultRuntime = "dev-manager-mcp";  # or "docker-compose", "launchd"
-  defaultNetwork = "tailscale";        # or "localhost"
+{ pkgs, lib, config, ... }:
+{
+  saas-controller.services.my-gateway = {
+    enable = true;
+    displayName = "My API Gateway";
+    provider = "zuplo";
+    providerConfig = {
+      project = "my-gateway";       # Zuplo project name
+      account = "my-account";       # Zuplo account
+      path = "services/my-gateway"; # Path to zuplo project in repo
+    };
+
+    environments = {
+      local.enable = true;
+      edge = {
+        enable = true;
+        autodeploy = true;          # Auto-deploy on git push
+      };
+    };
+
+    # Secret management
+    secretspec = {
+      saToken = "client-myorg";     # 1Password SA token alias
+      environments = {
+        local = {
+          serviceProfiles = [ "tailscale" ];
+          # → validates TS_CLIENT_SECRET, TS_CLIENT_ID
+        };
+        edge = {
+          serviceProfiles = [ "tailscale" "zuplo-backend" ];
+          # → validates tailscale + zuplo secrets
+        };
+      };
+      tags = [ "tailscale" "zuplo" ]; # For filtered checking
+    };
+  };
+}
+```
+
+```bash
+sc up                              # Start locally with tailscale HTTPS
+sc deploy my-gateway -e edge       # Deploy to edge environment
+sc check-secrets --tag tailscale   # Validate tailscale secrets across services
+```
+
+## Secret Profiles
+
+Secrets are managed in two layers: controller-level profile definitions and per-service composition.
+
+### Define profiles at the controller level
+
+Profiles are reusable sets of secret definitions:
+
+```nix
+saas-controller.secretProfiles = {
+  tailscale = {
+    TS_CLIENT_SECRET = {
+      description = "Tailscale OAuth client secret";
+      required = true;
+      providers = [ "saas-controller" ];
+    };
+    TS_CLIENT_ID = {
+      description = "Tailscale OAuth client ID";
+      required = false;
+      providers = [ "saas-controller" ];
+    };
+  };
+  my-api-keys = {
+    API_KEY = {
+      description = "External API key";
+      providers = [ "saas-controller" ];
+    };
+  };
 };
 ```
 
-### Per-service overrides
+### Compose profiles per service per environment
+
+Each service selects which profiles it needs for each environment:
 
 ```nix
-saas-controller.services.my-service = {
-  runtime = "docker-compose";  # override for this service only
-  network = "localhost";       # no Tailscale exposure
-  # ...
+services.my-service.secretspec = {
+  saToken = "client-myorg";          # 1Password SA token alias
+  environments = {
+    local = {
+      serviceProfiles = [ "tailscale" ];
+      # Only tailscale secrets needed locally
+    };
+    edge = {
+      serviceProfiles = [ "tailscale" "my-api-keys" ];
+      # Both profiles needed for edge deployment
+    };
+  };
+  tags = [ "tailscale" ];            # For sc check-secrets --tag filtering
 };
 ```
 
-### Available runtimes
+### Provider auto-export
 
-| Runtime | Process management | Port allocation | Status |
-|---------|-------------------|-----------------|--------|
-| `dev-manager-mcp` | mcporter daemon | Dynamic from daemon | Production |
-| `docker-compose` | docker compose | Compose port mapping | Stub |
-| `launchd` | macOS launchctl | Port file persistence | Stub |
+Providers can declare `secretProfiles` in their implementation (e.g., the `zuplo` provider exports `zuplo` and `zudoku` profiles). These are automatically merged into `saas-controller.secretProfiles`. When a service uses a provider, that provider's profiles are auto-included — no manual wiring needed.
 
-### Available networks
+## CLI Reference
 
-| Network | Exposure | Use case |
-|---------|----------|----------|
-| `tailscale` | HTTPS on tailnet | Remote access, team sharing |
-| `localhost` | 127.0.0.1 only | Local-only development |
+```bash
+# Local development
+sc up                                    # Start all local services
+sc up my-gateway                         # Start specific service
+sc up --environment edge                 # Start for specific environment
+
+# Deployment
+sc deploy                                # Deploy all (default environment)
+sc deploy --environment production       # Deploy all to production
+sc deploy my-gateway -e edge             # Deploy specific service to edge
+sc undeploy my-gateway                   # Remove persistent service
+
+# Secret management
+sc check-secrets                         # Validate all service secrets
+sc check-secrets --tag tailscale         # Filter by tag
+sc check-secrets --service my-gateway    # Filter by service
+sc secret-status                         # Secret-to-service mapping table
+
+# Other
+sc help                                  # Show help
+provision-projects                       # One-time project setup
+```
+
+## Provider Summary
+
+| Provider | providerConfig keys | sc up? | Auto-exported profiles |
+|----------|-------------------|--------|----------------------|
+| `zuplo` | `project`, `account`, `path` | Yes | `zuplo`, `zudoku` |
+| `docker-compose` | `path`, `composeFile`(opt), `tailscale`(opt) | Yes | (none) |
+
+## Tailscale Setup
+
+`sc up` requires one-time Tailscale setup: ACL tags, an OAuth client, and credentials. See the [tailscale setup guide](skills/saas-controller/references/tailscale-setup.md) for step-by-step instructions.
 
 ## Extensibility
 
-Register custom providers, runtimes, or networks:
+Register custom providers:
 
 ```nix
-saas-controller = {
-  # Custom cloud provider
-  externalProviders.aws-lambda = ./providers/aws-lambda.nix;
-
-  # Custom runtime
-  externalRuntimes.podman = ./runtimes/podman.nix;
-
-  # Custom network
-  externalNetworks.ngrok = ./networks/ngrok.nix;
-};
+saas-controller.externalProviders.my-provider = ./providers/my-provider.nix;
 ```
 
-See [EXTENDING.md](./EXTENDING.md) for detailed authoring guides and templates.
+See [EXTENDING.md](./EXTENDING.md) for the provider authoring guide and `providers/TEMPLATE.nix` for the interface template.
 
 ## File Structure
 
 ```
-├── devenv.nix              # Module entrypoint
+├── devenv.nix              # Module entrypoint (options + config)
 ├── lib/
-│   ├── helpers.nix         # Task builders and runtime dispatcher
+│   ├── helpers.nix         # Task builders and deploy pipeline
 │   ├── dependencies.nix    # Dependency validation
-│   └── networks.nix        # Network strategies (tailscale, localhost)
-├── providers/              # Service providers (WHAT to run)
-│   ├── TEMPLATE.nix
+│   └── docker-compose.nix  # Shared compose file helpers
+├── providers/              # Cloud providers
+│   ├── TEMPLATE.nix        # Provider interface template
 │   ├── zuplo.nix
 │   ├── frontegg.nix
 │   ├── datadog.nix
-│   └── secretspec-export.nix
-├── runtimes/               # Process runtimes (HOW to run)
-│   ├── TEMPLATE.nix
-│   ├── dev-manager-mcp.nix
+│   ├── secretspec-export.nix
 │   ├── docker-compose.nix
-│   └── launchd.nix
-└── scripts/
-    └── frontegg-register.mjs
-```
-
-## CLI Reference
-
-### sc (SaaS Controller)
-
-```bash
-sc up [service]                    # Start local dev servers
-sc up --environment edge           # Start for specific environment
-sc deploy [service] -e <env>       # Deploy with pre/post hooks
-sc help                            # Show help
-```
-
-### Standalone scripts
-
-```bash
-provision-projects                 # One-time project setup
-deploy-environment <env>           # Deploy all services
-export-secrets-environment <env>   # Export secrets
-check-saas-controller-secrets      # Validate credentials
+│   └── hello-world.nix
+├── scripts/
+│   └── frontegg-register.mjs
+└── skills/
+    └── saas-controller/    # Agent skill (npx skills add)
+        ├── SKILL.md
+        └── references/
 ```
 
 ## License

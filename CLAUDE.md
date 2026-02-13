@@ -1,137 +1,138 @@
 # SaaS Controller Module
 
-Multi-cloud service orchestration with runtime + network provider abstraction for devenv.
+Multi-cloud service orchestration for devenv. Provider-owned lifecycle with docker-compose and Tailscale HTTPS.
 
-## Architecture
+> **Consumer docs**: See [README.md](README.md) for configuration, CLI usage, and examples.
+> **Agent skill**: Install via `npx skills add afterthought/saas-controller` for agent context in consuming repos.
 
-Provider-owned lifecycle — each provider generates its own docker-compose stack:
+## Goals and Use Cases
 
-- **Providers** (WHAT): Cloud platform adapters (zuplo, frontegg, datadog, secretspec, hello-world)
-- **`sc up`**: Derives tailscale hostname from `VK_WORKSPACE_ID`, starts provider compose stacks with tailscale sidecar for HTTPS on the tailnet
-- **`sc deploy`**: Task-based deployment with pre/post hooks
+SaaS Controller solves a specific problem: managing the lifecycle of cloud SaaS services (API gateways, auth providers, monitoring) across local dev and cloud environments from a single declarative config.
 
-Task helpers in `lib/helpers.nix` orchestrate the deploy pipeline.
+**Core use cases:**
+- Local dev with real HTTPS URLs on a Tailscale tailnet (`sc up`)
+- Declarative deployment with pre/post hooks and dependency ordering (`sc deploy`)
+- Secret validation across services and environments (`sc check-secrets`)
+- One-time project provisioning on cloud platforms (`provision-projects`)
 
-## Key Files
+**Design principles:**
+- Provider-owned lifecycle: providers control their own `up()` and `deploy()`, no generic runtime/network abstraction
+- Composition over configuration: secret profiles compose per-service per-environment
+- Nix-native: all configuration is devenv module options, all scripts are nix-generated bash
+- Ephemeral by default: `sc up` creates ephemeral Tailscale nodes that auto-remove on exit
+
+## Architecture (Internals)
 
 ```
-devenv.nix              # Module options and config (imports everything)
-lib/helpers.nix         # Task builders + runtime/network dispatcher
-lib/dependencies.nix    # Dependency validation (circular detection)
-lib/networks.nix        # Network strategies (tailscale, localhost)
-runtimes/*.nix          # Process runtimes
-providers/*.nix         # Cloud providers
-scripts/*.mjs           # Helper scripts (frontegg registration)
+devenv.nix                    # Module options (saas-controller.*) + sc CLI + task wiring
+    │
+    ├── lib/helpers.nix       # Task builders: mkDeployTask, mkSecretExportTask
+    │                         # Generates devenv tasks for deploy pipeline
+    │
+    ├── lib/dependencies.nix  # Dependency graph validation (circular detection)
+    │                         # Validates service→service and service→secret-export deps
+    │
+    ├── lib/docker-compose.nix # Shared compose helpers: mkComposeFile, mkServeConfig
+    │                          # Used by providers to generate compose stacks
+    │
+    └── providers/*.nix       # Each provider exports: { up?, provisionProject, deploy, provision?, secretProfiles? }
 ```
 
-## How sc up Works
+### How devenv.nix is organized
 
-1. `sc up` derives hostname slug from `VK_WORKSPACE_ID` and reads tailnet suffix (`SC_TAILNET` or host auto-detect)
-2. Checks `TS_CLIENT_SECRET` is set
-3. For each enabled service with `local` environment and `up()`, runs provider's `up()` in parallel
-4. Provider `up()` generates compose stack (Dockerfile, docker-compose.yml, serve-config.json) in `.saas-controller/compose/<serviceName>/`
-5. Compose stack includes tailscale sidecar + app containers sharing its network namespace
-6. `docker compose up -d --wait` starts detached and waits for tailscale healthcheck
-7. Prints HTTPS URLs (`https://<hostname>.<tailnet>:443`) after healthcheck passes
-8. Streams logs with `docker compose logs -f`
-9. Trap handler runs `docker compose down` on exit (ephemeral tailscale nodes auto-remove)
+The file has two main sections:
+
+1. **`options.saas-controller`** (~lines 55-813): Module option declarations
+   - `secretProfiles`: Controller-level secret profile definitions
+   - `releaseChannels`: Deployment channel policies
+   - `externalProviders`: Registration point for custom providers
+   - `services`: Service catalog (the main config surface)
+   - `secret-exports`: Standalone secret export operations
+
+2. **`config`** (~lines 816-end): Implementation
+   - Provider merging (builtin + external)
+   - Secret profile composition (provider auto-export)
+   - Secretspec TOML generation
+   - `sc` CLI script (the main entrypoint)
+   - Devenv task wiring (deploy pipeline)
+
+### Provider interface
+
+Providers are `.nix` files returning an attrset. See `providers/TEMPLATE.nix` for the full interface:
+
+- `up(serviceName, service)` → bash script for local dev (optional)
+- `provisionProject(serviceName, service)` → one-time setup
+- `deploy(serviceName, service, environment, envConfig, profile, provider)` → cloud deployment
+- `provision(serviceName, provisionConfig, servicePath, environment, serviceConfig)` → hook provider (optional)
+- `secretProfiles` → attrset of named secret sets (optional, auto-merged)
+
+### Task system internals
+
+`lib/helpers.nix` generates devenv tasks from service config:
+
+- `saas-pre-deploy:<service>` → runs `deploy.preHooks` in order
+- `saas-deploy:<service>` → calls provider's `deploy()`
+- `saas-post-deploy:<service>` → runs `deploy.postHooks`, receives `$DEVENV_TASKS_OUTPUTS`
+- `saas-secret-export:<name>` → calls provider's secret export
+
+Dependencies between tasks are wired from `service.dependencies` and `secret-export.dependencies`. The dependency validator in `lib/dependencies.nix` checks for cycles at nix evaluation time.
+
+## Nix Patterns
+
+### Provider function signatures
+
+Providers receive `{ pkgs, lib, config }` and return an attrset. Functions take service config as arguments and return bash script strings (not derivations):
+
+```nix
+{ pkgs, lib, config }:
+{
+  deploy = serviceName: service: environment: envConfig: profile: provider: ''
+    # bash script here
+    cd ${config.git.root}/${service.providerConfig.path}
+    ${pkgs.curl}/bin/curl -X POST ...
+  '';
+}
+```
+
+### Inline bash generation
+
+All CLI commands and tasks are generated as bash strings in nix. Use `pkgs.<tool>/bin/<tool>` for tool references. Use `${config.git.root}` for repo root paths. Use `lib.concatStringsSep`, `lib.mapAttrsToList`, `lib.optionalString` for composing script fragments.
+
+### providerConfig is untyped
+
+`service.providerConfig` is `lib.types.attrs` — an untyped attrset. Each provider defines its own expected keys. This is intentional: providers evolve independently.
+
+### Secret profile composition
+
+Three-layer merge in `mkServiceSecretspecToml` (config section):
+1. Controller-level profiles from `serviceProfiles`
+2. Provider-contributed profiles (auto-included)
+3. Per-instance inline `secrets`
+
+First occurrence wins on duplicate secret names.
 
 ## Extending
 
 ### New Provider
 
 1. Copy `providers/TEMPLATE.nix`
-2. Implement `provisionProject`, `deploy`, optionally `provision` (for hooks)
-3. Register: `saas-controller.externalProviders.my-provider = ./my-provider.nix;`
+2. Implement `provisionProject`, `deploy`, optionally `up` and `provision`
+3. Optionally add `secretProfiles` for auto-export
+4. Register: `saas-controller.externalProviders.my-provider = ./my-provider.nix;`
 
-### New Runtime
+See [EXTENDING.md](EXTENDING.md) for detailed guide.
 
-1. Copy `runtimes/TEMPLATE.nix`
-2. Implement `mkScript` — must set `$PORT`, call network snippets, stream logs
-3. Register: `saas-controller.externalRuntimes.my-runtime = ./my-runtime.nix;`
+## Key Files
 
-### New Network
-
-Create a .nix file returning `{ name, setup, cleanup, printUrl }`:
-- `setup`: bash snippet, called after `$PORT` is set, must set `$DEVSERVER_URL`
-- `cleanup`: bash snippet, called in trap handler
-- `printUrl`: bash snippet, echo the URL
-
-Register: `saas-controller.externalNetworks.my-network = ./my-network.nix;`
-
-## Task System
-
-Tasks are input-based (environment passed as JSON at runtime):
-
-```bash
-DEVENV_TASK_INPUT='{"environment": "edge"}' devenv tasks run saas-deploy:my-service
 ```
-
-Task chain: `saas-pre-deploy` -> `saas-deploy` -> `saas-post-deploy`
-
-## Secrets
-
-- **Control plane**: SaaS controller credentials (ZUPLO_API_KEY, FRONTEGG_*) via `environmentProfiles`
-- **Data plane**: Service runtime secrets via `run.secretSource`
-- **Tailscale**: OAuth client credentials (TS_CLIENT_ID, TS_CLIENT_SECRET) for ephemeral node creation
-
-## Tailscale Setup (One-Time)
-
-`sc up` uses tailscale sidecar containers to give each worktree unique HTTPS URLs on the tailnet. This requires one-time setup:
-
-### 1. Configure ACL tag
-
-In the [Tailscale admin console](https://login.tailscale.com/admin/acls), switch to the JSON policy editor and add a `tagOwners` entry:
-
-```json
-"tagOwners": {
-  "tag:sc-dev": ["autogroup:admin"]
-}
-```
-
-This declares the tag so OAuth clients can use it. Your existing ACL rules handle network access. If your policy uses the default `"*"` → `"*:*"` rule, also add a rule for tagged nodes (tags opt out of the default member group):
-
-```json
-{ "action": "accept", "src": ["autogroup:member"], "dst": ["tag:sc-dev:*"] }
-```
-
-### 2. Create OAuth client
-
-In the [Tailscale admin console](https://login.tailscale.com/admin/settings/oauth):
-
-1. Click **Generate OAuth client** (under "Trust credentials")
-2. Add the **`auth_keys`** scope (Write)
-3. Select **`tag:sc-dev`** as the tag (available after step 1)
-4. Generate and copy both the **Client ID** and **Client Secret**
-
-The OAuth client generates and auto-renews auth keys — they never expire. The tag is assigned to nodes automatically by the OAuth client; the sidecar doesn't need to advertise it.
-
-### 3. Store credentials and set environment
-
-Add to your environment (via SecretSpec, `.env`, or shell export):
-
-- `TS_CLIENT_SECRET` — the OAuth client secret (required)
-- `TS_CLIENT_ID` — the OAuth client ID (optional)
-- `SC_TAILNET` — your tailnet MagicDNS suffix, e.g. `my-tailnet.ts.net` (auto-detected if host tailscale is installed)
-
-### How it works
-
-- `sc up` reads `VK_WORKSPACE_ID` (first 8 chars → slug, fallback: `local`)
-- Reads tailnet suffix from `SC_TAILNET` env var or host tailscale (if installed)
-- Each provider generates a compose stack with a `tailscale/tailscale:latest` sidecar
-- The sidecar container joins the tailnet as an ephemeral node (host tailscale NOT required)
-- App containers share the sidecar's network namespace (`network_mode: service:tailscale`)
-- Tailscale serve provides HTTPS with valid certs on the tailnet
-- Hostname pattern: `sc-<slug>-<serviceName>.<tailnet>`
-- Ephemeral nodes auto-remove when containers stop
-
-## Common Operations
-
-```bash
-sc up                              # Start all local services (requires tailscale)
-sc deploy my-service -e edge       # Deploy with hooks
-provision-projects                 # One-time setup
-check-saas-controller-secrets      # Validate credentials
+devenv.nix              # Module options and config (imports everything)
+lib/helpers.nix         # Task builders + deploy pipeline
+lib/dependencies.nix    # Dependency validation (circular detection)
+lib/docker-compose.nix  # Shared compose file helpers
+providers/*.nix         # Cloud providers
+providers/TEMPLATE.nix  # Provider interface template
+scripts/*.mjs           # Helper scripts (frontegg registration)
+skills/saas-controller/ # Agent skill for consuming repos
 ```
 
 ## Dex Task Tracking with OpenSpec
