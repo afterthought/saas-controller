@@ -623,6 +623,11 @@ in
                               default = [ ];
                               description = "SecretSpec provider aliases that supply this secret";
                             };
+                            default = lib.mkOption {
+                              type = lib.types.nullOr lib.types.str;
+                              default = null;
+                              description = "Default value for this secret (used when no provider supplies it)";
+                            };
                           };
                         });
                         default = { };
