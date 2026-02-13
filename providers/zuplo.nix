@@ -42,14 +42,26 @@ in
         "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS"
       ];
 
-      # Bare env lines for additional secrets from secretspec profiles/inline.
-      # These pass host env vars (exported by secretspec run) into containers
+      # Additional secret names from secretspec profiles/inline (beyond explicit ones)
+      additionalSecretNames = compose.collectSecretNames {
+        inherit service;
+        providerSecretProfiles = zuploSecretProfiles;
+        excludeNames = explicitEnvNames;
+      };
+
+      # Bare env lines for docker-compose: pass host env vars into containers
       # without writing secrets to disk.
       bareEnvLines = compose.mkBareEnvLines {
         inherit service;
         providerSecretProfiles = zuploSecretProfiles;
         excludeNames = explicitEnvNames;
       };
+
+      # Bash snippet to append additional secrets to the .env file.
+      # At runtime, secretspec run has already exported these into the shell.
+      # Uses printenv with fallback to empty string for unset vars.
+      dotenvExtraLines = lib.concatMapStringsSep "\n        " (name:
+        ''echo "${name}=$(printenv ${name} 2>/dev/null || true)"'') additionalSecretNames;
 
       # Volume strategy:
       #   1. bind-mount host source for live reload
@@ -132,6 +144,7 @@ in
         echo "ZUPLO_PUBLIC_SERVER_URL=https://$FQDN:8443"
         echo "ZUDOKU_PUBLIC_AUTH_CLIENT_ID=''${ZUDOKU_PUBLIC_AUTH_CLIENT_ID:-22426e52-307b-4bf0-92c7-6f978f78a966}"
         echo "ZUDOKU_PUBLIC_AUTH_ISSUER=''${ZUDOKU_PUBLIC_AUTH_ISSUER:-https://app-5lp8mgkiydtb.us.frontegg.com}"
+        ${dotenvExtraLines}
       } > "${sourceDir}/.env"
 
       # Generate Dockerfile (shared by both services)

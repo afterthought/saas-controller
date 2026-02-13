@@ -1,20 +1,10 @@
-# Provider: hello-world
-#
-# A minimal provider for testing sc up.
+# Hello-world provider: minimal example for testing sc up.
 # Runs a simple Node.js HTTP server that responds with "Hello World".
-#
-# Usage in your devenv.nix:
-#   saas-controller.services.hello-world = {
-#     enable = true;
-#     provider = "hello-world";
-#     providerConfig.path = "examples/hello-world";
-#     environments.local.enable = true;
-#   };
 
 { pkgs, lib, config }:
 
 let
-  compose = import ../lib/docker-compose.nix { inherit lib config; };
+  compose = import ../../lib/docker-compose.nix { inherit lib config; };
 in
 {
   # Local dev lifecycle: generate docker-compose.yml and run the stack

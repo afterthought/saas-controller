@@ -14,9 +14,6 @@ let
     # Generic provider for pre-authored docker-compose files
     docker-compose = import ./providers/docker-compose.nix { inherit pkgs lib config; };
 
-    # Example provider for testing sc up / dev-serve
-    hello-world = import ./providers/hello-world.nix { inherit pkgs lib config; };
-
     # Legacy provider names for backward compatibility
     secretspec-export = import ./providers/secretspec-export.nix { inherit pkgs lib config; };
   };

@@ -122,6 +122,17 @@ First occurrence wins on duplicate secret names.
 
 See [EXTENDING.md](EXTENDING.md) for detailed guide.
 
+## Quality Gates
+
+After modifying any `.nix` files, verify the example devenv shells still evaluate:
+
+```bash
+(cd examples/test-gateway && devenv test)
+(cd examples/hello-world && devenv test)
+```
+
+These exercise the full module evaluation including provider imports, secret profile composition, and compose generation.
+
 ## Key Files
 
 ```
