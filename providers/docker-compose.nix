@@ -21,7 +21,7 @@
 { pkgs, lib, config }:
 
 let
-  compose = import ../lib/docker-compose.nix { inherit lib; };
+  compose = import ../lib/docker-compose.nix { inherit lib config; };
 
   # Convert an SA token alias to its environment variable name.
   # "client-willdan" -> "OP_SA_CLIENT_WILLDAN"

@@ -1,11 +1,10 @@
 { pkgs, lib, config }:
 
 let
-  compose = import ../lib/docker-compose.nix { inherit lib; };
-in
-{
-  # Secret profiles contributed by this provider
-  secretProfiles = {
+  compose = import ../lib/docker-compose.nix { inherit lib config; };
+
+  # Secret profiles contributed by this provider (extracted to let for reuse in up)
+  zuploSecretProfiles = {
     # Zuplo deploy credentials (currently empty — deploy uses npx zuplo CLI auth)
     zuplo = { };
 
@@ -25,12 +24,32 @@ in
       };
     };
   };
+in
+{
+  secretProfiles = zuploSecretProfiles;
 
   # Local dev lifecycle: generate docker-compose.yml with api + docs services
   up = serviceName: service:
     let
       composeDir = "${config.git.root}/.saas-controller/compose/${serviceName}";
       sourceDir = "${config.git.root}/${service.providerConfig.path}";
+
+      # Env vars already handled by explicit entries with defaults/computed values
+      explicitEnvNames = [
+        "ZUPLO_PUBLIC_SERVER_URL"
+        "ZUDOKU_PUBLIC_AUTH_CLIENT_ID"
+        "ZUDOKU_PUBLIC_AUTH_ISSUER"
+        "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS"
+      ];
+
+      # Bare env lines for additional secrets from secretspec profiles/inline.
+      # These pass host env vars (exported by secretspec run) into containers
+      # without writing secrets to disk.
+      bareEnvLines = compose.mkBareEnvLines {
+        inherit service;
+        providerSecretProfiles = zuploSecretProfiles;
+        excludeNames = explicitEnvNames;
+      };
 
       # Volume strategy:
       #   1. bind-mount host source for live reload
@@ -41,7 +60,7 @@ in
       #   All app containers share the tailscale sidecar's network namespace.
       #   Tailscale serve routes external HTTPS to internal HTTP ports.
       composeContent = compose.mkComposeFile {
-        appServices = lib.concatStringsSep "\n" [
+        appServices = lib.concatStringsSep "\n" ([
           "  zuplo-api:"
           "    build:"
           "      context: ."
@@ -58,6 +77,7 @@ in
           "      - ZUDOKU_PUBLIC_AUTH_CLIENT_ID=\${ZUDOKU_PUBLIC_AUTH_CLIENT_ID:-22426e52-307b-4bf0-92c7-6f978f78a966}"
           "      - ZUDOKU_PUBLIC_AUTH_ISSUER=\${ZUDOKU_PUBLIC_AUTH_ISSUER:-https://app-5lp8mgkiydtb.us.frontegg.com}"
           "      - __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=\${FQDN}"
+        ] ++ bareEnvLines ++ [
           "    command: [\"npx\", \"zuplo\", \"dev\", \"--port\", \"30000\", \"--start-docs\", \"false\", \"--start-editor\", \"false\"]"
           ""
           "  zuplo-docs:"
@@ -76,8 +96,9 @@ in
           "      - ZUDOKU_PUBLIC_AUTH_CLIENT_ID=\${ZUDOKU_PUBLIC_AUTH_CLIENT_ID:-22426e52-307b-4bf0-92c7-6f978f78a966}"
           "      - ZUDOKU_PUBLIC_AUTH_ISSUER=\${ZUDOKU_PUBLIC_AUTH_ISSUER:-https://app-5lp8mgkiydtb.us.frontegg.com}"
           "      - __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=\${FQDN}"
+        ] ++ bareEnvLines ++ [
           "    command: [\"npx\", \"zuplo\", \"docs\", \"--port\", \"30001\"]"
-        ];
+        ]);
         extraVolumes = [ "node_modules" ];
       };
 

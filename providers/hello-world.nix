@@ -14,7 +14,7 @@
 { pkgs, lib, config }:
 
 let
-  compose = import ../lib/docker-compose.nix { inherit lib; };
+  compose = import ../lib/docker-compose.nix { inherit lib config; };
 in
 {
   # Local dev lifecycle: generate docker-compose.yml and run the stack

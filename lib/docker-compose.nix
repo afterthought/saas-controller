@@ -10,9 +10,77 @@
 # Callers write these to disk via the writeFile helper which uses printf
 # to avoid bash variable expansion.
 
-{ lib }:
+{ lib, config }:
 
 rec {
+  # Collect all secret names from a service's secretspec across all environments.
+  #
+  # Uses the same three-layer composition as devenv.nix's mkServiceSecretspecToml:
+  #   1. Provider-contributed profiles (auto-included)
+  #   2. Controller-level profiles from serviceProfiles
+  #   3. Per-instance inline secrets
+  # First occurrence wins on duplicate secret names.
+  #
+  # Args:
+  #   service: The service configuration object (must have secretspec)
+  #   providerSecretProfiles: The provider's own secretProfiles attrset
+  #     e.g. { zuplo = {}; zudoku = { ZUDOKU_PUBLIC_AUTH_CLIENT_ID = {...}; }; }
+  #   excludeNames: List of env var names to omit (already handled by explicit entries)
+  #
+  # Returns: Sorted list of secret name strings.
+  collectSecretNames = { service, providerSecretProfiles ? {}, excludeNames ? [] }:
+    let
+      secretspecCfg = service.secretspec or null;
+      profiles = config.saas-controller.secretProfiles;
+      providerProfileNames = lib.attrNames providerSecretProfiles;
+    in
+    if secretspecCfg == null then []
+    else
+      let
+        allNames = lib.unique (lib.flatten (lib.mapAttrsToList (_envName: envCfg:
+          let
+            allProfileNames = lib.unique (providerProfileNames ++ (envCfg.serviceProfiles or []));
+
+            profileSecrets = lib.foldl (acc: profileName:
+              let
+                profileDef = profiles.${profileName} or {};
+                newSecrets = lib.filterAttrs (name: _: ! (acc ? ${name})) profileDef;
+              in acc // newSecrets
+            ) {} allProfileNames;
+
+            inlineSecrets = envCfg.secrets or {};
+            extraSecrets = lib.filterAttrs (name: _: ! (profileSecrets ? ${name})) inlineSecrets;
+
+            allSecrets = profileSecrets // extraSecrets;
+          in
+          lib.attrNames allSecrets
+        ) secretspecCfg.environments));
+
+        filteredNames = lib.filter (name: ! (lib.elem name excludeNames)) allNames;
+      in
+      lib.sort builtins.lessThan filteredNames;
+
+  # Generate bare environment variable reference lines for docker-compose YAML.
+  #
+  # Bare references (variable name without '=') cause Docker Compose to pass the
+  # host environment variable's value into the container. Since secretspec run
+  # has already exported all secrets into the host shell, this injects them into
+  # containers without writing secrets to disk.
+  #
+  # Args:
+  #   service: The service configuration object
+  #   providerSecretProfiles: The provider's own secretProfiles attrset
+  #   excludeNames: List of env var names already handled by explicit entries
+  #   indent: Number of spaces for YAML indentation (default: 6)
+  #
+  # Returns: List of YAML strings like "      - SECRET_NAME"
+  mkBareEnvLines = { service, providerSecretProfiles ? {}, excludeNames ? [], indent ? 6 }:
+    let
+      names = collectSecretNames { inherit service providerSecretProfiles excludeNames; };
+      pad = lib.concatStrings (builtins.genList (_: " ") indent);
+    in
+    map (name: "${pad}- ${name}") names;
+
   # Write a Nix string to a file without bash variable expansion.
   # Uses printf to avoid heredoc quoting issues with multi-line content.
   #
