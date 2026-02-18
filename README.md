@@ -240,6 +240,43 @@ provision-projects                       # One-time project setup
 
 `sc up` requires one-time Tailscale setup: ACL tags, an OAuth client, and credentials. See the [tailscale setup guide](skills/saas-controller/references/tailscale-setup.md) for step-by-step instructions.
 
+## SA Token Provider Setup
+
+Services that use 1Password service account tokens (via `secretspec.auth.saToken`) need a configured `sa-tokens` secretspec provider alias. The secretspec.toml defining which tokens are needed is **auto-generated** from your service configs — you only need to configure the provider backend once per machine.
+
+### One-time setup
+
+Choose a provider backend for SA token storage:
+
+```bash
+# macOS Keychain (default for most developers)
+secretspec config provider add sa-tokens "keyring://"
+
+# Environment variables (useful for CI or non-macOS)
+secretspec config provider add sa-tokens "env://"
+```
+
+That's it. The module auto-generates the `secretspec.toml` at nix eval time from all services that declare `secretspec.auth.saToken`.
+
+### Naming convention
+
+`saToken = "client-willdan"` maps to `OP_SA_CLIENT_WILLDAN` (hyphenated alias becomes `OP_SA_<UPPERCASE_WITH_UNDERSCORES>`).
+
+### Using the env provider
+
+When using `env://`, export the required SA tokens before running commands:
+
+```bash
+export OP_SA_CLIENT_WILLDAN="your-sa-token-here"
+sc up
+```
+
+### Verifying
+
+```bash
+secretspec config provider list    # Check configured providers
+```
+
 ## Extensibility
 
 Register custom providers:
@@ -256,6 +293,7 @@ See [EXTENDING.md](./EXTENDING.md) for the provider authoring guide and `provide
 ├── devenv.nix              # Module entrypoint (options + config)
 ├── lib/
 │   ├── helpers.nix         # Task builders and deploy pipeline
+│   ├── sa-swap.nix         # SA token swap snippet (shared by helpers + providers)
 │   ├── dependencies.nix    # Dependency validation
 │   └── docker-compose.nix  # Shared compose file helpers
 ├── providers/              # Cloud providers

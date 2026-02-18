@@ -112,13 +112,13 @@ in
       example = [ "acme-vault" "saas-controller" ];
     };
 
-    # Directory containing SA token secretspec managed by __mac-nix
     saTokensDir = lib.mkOption {
       type = lib.types.str;
       default = "$HOME/.config/secretspec/sa-tokens";
       description = ''
         Path to the directory containing SA token secretspec.toml.
-        Used for per-service SA token retrieval from macOS keyring.
+        Auto-generated as a nix store path when services declare secretspec.auth.saToken.
+        Override to use a custom secretspec directory for SA token retrieval.
       '';
     };
 
@@ -453,8 +453,8 @@ in
                         type = lib.types.nullOr lib.types.str;
                         default = null;
                         description = ''
-                          SA token alias for keyring retrieval. When set, sc up retrieves
-                          the named token from the keyring and exports it as OP_SERVICE_ACCOUNT_TOKEN
+                          SA token alias for retrieval via the sa-tokens provider. When set,
+                          sc up retrieves the named token and exports it as OP_SERVICE_ACCOUNT_TOKEN
                           before running secretspec commands for this service.
                           E.g. "client_willdan" retrieves OP_SA_CLIENT_WILLDAN.
                         '';
@@ -466,7 +466,7 @@ in
                   description = ''
                     Authentication configuration for secretspec runtime access.
                     - provider: secretspec provider alias (URN) used in secret definitions
-                    - saToken: 1Password SA token alias for keyring credential retrieval
+                    - saToken: SA token alias, retrieved via the sa-tokens provider at runtime
                   '';
                 };
               };
@@ -612,6 +612,37 @@ in
       secretspecServices = lib.filterAttrs
         (_: service: service.enable && service.secretspec != null)
         config.saas-controller.services;
+
+      # ── SA token secretspec (auto-generated from service configs) ──────
+      # Collect unique SA token aliases from all services that use auth.saToken
+      allSATokenAliases = lib.unique (lib.concatMap
+        (service:
+          if service.secretspec != null
+            && service.secretspec.auth != null
+            && service.secretspec.auth.saToken != null
+          then [ service.secretspec.auth.saToken ]
+          else [])
+        (lib.attrValues enabledServices));
+
+      # Generate sa-tokens secretspec.toml content at nix eval time
+      saTokensTomlContent =
+        let
+          tokenLines = lib.concatMapStringsSep "\n" (alias:
+            let name = toSASecretName alias;
+            in ''${name} = { description = "1Password SA token for ${alias}", providers = ["sa-tokens"] }''
+          ) allSATokenAliases;
+        in ''
+[project]
+name = "sa-tokens"
+revision = "1.0"
+
+[profiles.default]
+${tokenLines}
+'';
+
+      # Write as a nix store derivation — no runtime generation needed.
+      # Used as the default for saas-controller.saTokensDir when SA tokens are configured.
+      generatedSATokensDir = pkgs.writeTextDir "secretspec.toml" saTokensTomlContent;
 
       # Generate TOML content for a single secret entry
       mkSecretToml = secretName: secretDef:
@@ -832,6 +863,11 @@ SECRETSPEC_EOF
             SC_TAILNET = { description = "Tailnet MagicDNS suffix, e.g. my-tailnet.ts.net (auto-detected if host tailscale installed)"; required = false; };
           };
         } // providerSecretProfiles);
+
+      # Auto-generate sa-tokens secretspec.toml as a nix store path when services use SA tokens.
+      # Consumers can override with an explicit path if needed.
+      saas-controller.saTokensDir = lib.mkIf (allSATokenAliases != [])
+        (lib.mkDefault "${generatedSATokensDir}");
 
       # Runtime assertions for provider and environment validation
       assertions = lib.flatten [
@@ -1137,16 +1173,9 @@ SECRETSPEC_EOF
                 hasSAToken = hasAuth && secretspecCfg.auth.saToken != null;
                 saSecretName = if hasSAToken then toSASecretName secretspecCfg.auth.saToken else "";
                 saTokensDir = config.saas-controller.saTokensDir;
-                saSwapSnippet = lib.optionalString hasSAToken ''
-                  # SA token swap: retrieve ${saSecretName} from keyring
-                  SA_TOKEN="$(cd "${saTokensDir}" && ${pkgs.secretspec}/bin/secretspec get --provider keyring --profile default ${saSecretName})"
-                  if [ -z "$SA_TOKEN" ]; then
-                    echo "❌ Error: Failed to retrieve ${saSecretName} from keyring for ${serviceName}." >&2
-                    echo "  Run 'store-sa-tokens' to populate SA tokens in the keyring." >&2
-                    exit 1
-                  fi
-                  export OP_SERVICE_ACCOUNT_TOKEN="$SA_TOKEN"
-                '';
+                saSwapSnippet = lib.optionalString hasSAToken (helpers.mkSASwapSnippet {
+                  inherit saSecretName saTokensDir serviceName;
+                });
               in ''
                 # Filter by service name
                 if [ -n "$FILTER_SERVICE" ] && [ "$FILTER_SERVICE" != "${serviceName}" ]; then
@@ -1275,8 +1304,7 @@ SECRETSPEC_EOF
                                 saTokensDir = config.saas-controller.saTokensDir;
                                 saSwapSnippet = lib.optionalString hasSAToken ''
                                   __SC_SAVED_SA_TOKEN="''${OP_SERVICE_ACCOUNT_TOKEN:-}"
-                                  SA_TOKEN="$(cd "${saTokensDir}" && ${pkgs.secretspec}/bin/secretspec get --provider keyring --profile default ${saSecretName})"
-                                  if [ -n "$SA_TOKEN" ]; then export OP_SERVICE_ACCOUNT_TOKEN="$SA_TOKEN"; fi
+                                  ${helpers.mkSASwapSnippet { inherit saSecretName saTokensDir serviceName; failMode = "soft"; }}
                                 '';
                                 saRestoreSnippet = lib.optionalString hasSAToken ''
                                   export OP_SERVICE_ACCOUNT_TOKEN="$__SC_SAVED_SA_TOKEN"
@@ -1362,8 +1390,7 @@ SECRETSPEC_EOF
                                 saTokensDir = config.saas-controller.saTokensDir;
                                 saSwapSnippet = lib.optionalString hasSAToken ''
                                   __SC_SAVED_SA_TOKEN="''${OP_SERVICE_ACCOUNT_TOKEN:-}"
-                                  SA_TOKEN="$(cd "${saTokensDir}" && ${pkgs.secretspec}/bin/secretspec get --provider keyring --profile default ${saSecretName})"
-                                  if [ -n "$SA_TOKEN" ]; then export OP_SERVICE_ACCOUNT_TOKEN="$SA_TOKEN"; fi
+                                  ${helpers.mkSASwapSnippet { inherit saSecretName saTokensDir serviceName; failMode = "soft"; }}
                                 '';
                                 saRestoreSnippet = lib.optionalString hasSAToken ''
                                   export OP_SERVICE_ACCOUNT_TOKEN="$__SC_SAVED_SA_TOKEN"
@@ -1445,8 +1472,7 @@ SECRETSPEC_EOF
                                   saTokensDir = config.saas-controller.saTokensDir;
                                   saSwapSnippet = lib.optionalString hasSAToken ''
                                     __SC_SAVED_SA_TOKEN="''${OP_SERVICE_ACCOUNT_TOKEN:-}"
-                                    SA_TOKEN="$(cd "${saTokensDir}" && ${pkgs.secretspec}/bin/secretspec get --provider keyring --profile default ${saSecretName})"
-                                    if [ -n "$SA_TOKEN" ]; then export OP_SERVICE_ACCOUNT_TOKEN="$SA_TOKEN"; fi
+                                    ${helpers.mkSASwapSnippet { inherit saSecretName saTokensDir serviceName; failMode = "soft"; }}
                                   '';
                                   saRestoreSnippet = lib.optionalString hasSAToken ''
                                     export OP_SERVICE_ACCOUNT_TOKEN="$__SC_SAVED_SA_TOKEN"
@@ -1582,16 +1608,9 @@ SECRETSPEC_EOF
                                   hasSAToken = hasAuth && service.secretspec.auth.saToken != null;
                                   saSecretName = if hasSAToken then toSASecretName service.secretspec.auth.saToken else "";
                                   saTokensDir = config.saas-controller.saTokensDir;
-                                  saSwapSnippet = lib.optionalString hasSAToken ''
-                                    # SA token swap: retrieve ${saSecretName} from keyring
-                                    SA_TOKEN="$(cd "${saTokensDir}" && ${pkgs.secretspec}/bin/secretspec get --provider keyring --profile default ${saSecretName})"
-                                    if [ -z "$SA_TOKEN" ]; then
-                                      echo "❌ Error: Failed to retrieve ${saSecretName} from keyring for ${serviceName}." >&2
-                                      echo "  Run 'store-sa-tokens' to populate SA tokens in the keyring." >&2
-                                      exit 1
-                                    fi
-                                    export OP_SERVICE_ACCOUNT_TOKEN="$SA_TOKEN"
-                                  '';
+                                  saSwapSnippet = lib.optionalString hasSAToken (helpers.mkSASwapSnippet {
+                                    inherit saSecretName saTokensDir serviceName;
+                                  });
                                   secretspecDir = "${config.git.root}/.saas-controller/secretspec/${serviceName}";
 
                                   # Wrap upScript with secretspec run if service has secretspec
@@ -1634,16 +1653,9 @@ SECRETSPEC_EOF
                                   hasSAToken = hasAuth && service.secretspec.auth.saToken != null;
                                   saSecretName = if hasSAToken then toSASecretName service.secretspec.auth.saToken else "";
                                   saTokensDir = config.saas-controller.saTokensDir;
-                                  saSwapSnippet = lib.optionalString hasSAToken ''
-                                    # SA token swap: retrieve ${saSecretName} from keyring
-                                    SA_TOKEN="$(cd "${saTokensDir}" && ${pkgs.secretspec}/bin/secretspec get --provider keyring --profile default ${saSecretName})"
-                                    if [ -z "$SA_TOKEN" ]; then
-                                      echo "❌ Error: Failed to retrieve ${saSecretName} from keyring for ${serviceName}." >&2
-                                      echo "  Run 'store-sa-tokens' to populate SA tokens in the keyring." >&2
-                                      exit 1
-                                    fi
-                                    export OP_SERVICE_ACCOUNT_TOKEN="$SA_TOKEN"
-                                  '';
+                                  saSwapSnippet = lib.optionalString hasSAToken (helpers.mkSASwapSnippet {
+                                    inherit saSecretName saTokensDir serviceName;
+                                  });
                                   secretspecDir = "${config.git.root}/.saas-controller/secretspec/${serviceName}";
 
                                   wrappedUpScript = if hasSecretspec then ''

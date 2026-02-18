@@ -269,6 +269,21 @@ See [EXTENDING.md](../../EXTENDING.md) for provider authoring guide and template
 
 `sc up` requires one-time Tailscale setup (ACL tags, OAuth client). See `references/tailscale-setup.md` for step-by-step instructions.
 
+## SA Token Provider Setup
+
+Services with `secretspec.auth.saToken` need the `sa-tokens` secretspec provider alias configured. The secretspec.toml is auto-generated from service configs at nix eval time — developers only configure the provider backend once.
+
+**One-time setup per machine:**
+
+```bash
+secretspec config provider add sa-tokens "keyring://"   # macOS Keychain
+secretspec config provider add sa-tokens "env://"       # Environment variables (CI)
+```
+
+**Naming:** `saToken = "client-willdan"` maps to `OP_SA_CLIENT_WILLDAN`.
+
+**Verify:** `secretspec config provider list`
+
 ## Deeper Questions
 
 For questions not covered here, use DeepWiki MCP:

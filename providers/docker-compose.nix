@@ -22,6 +22,7 @@
 
 let
   compose = import ../lib/docker-compose.nix { inherit lib config; };
+  inherit (import ../lib/sa-swap.nix { inherit pkgs; }) mkSASwapSnippet;
 
   # Shared Nix-time setup for a service. Returns an attrset of derived values
   # used by both `up` and `deploy`.
@@ -170,17 +171,9 @@ in
       saSecretName = if hasSAToken then "OP_SA_${lib.toUpper (builtins.replaceStrings ["-"] ["_"] service.secretspec.auth.saToken)}" else "";
       saTokensDir = config.saas-controller.saTokensDir;
 
-      # SA token swap for the wrapper script (retrieves token from keyring at service start)
-      saSwapSnippet = lib.optionalString hasSAToken ''
-        # SA token swap: retrieve ${saSecretName} from keyring
-        SA_TOKEN="$(cd "${saTokensDir}" && ${pkgs.secretspec}/bin/secretspec get --provider keyring --profile default ${saSecretName})"
-        if [ -z "$SA_TOKEN" ]; then
-          echo "Error: Failed to retrieve ${saSecretName} from keyring for ${serviceName}." >&2
-          echo "  Run 'store-sa-tokens' to populate SA tokens in the keyring." >&2
-          exit 1
-        fi
-        export OP_SERVICE_ACCOUNT_TOKEN="$SA_TOKEN"
-      '';
+      saSwapSnippet = lib.optionalString hasSAToken (mkSASwapSnippet {
+        inherit saSecretName saTokensDir serviceName;
+      });
 
       # The command the wrapper runs to start the compose stack
       # For secretspec services, TOML is written to the deploy dir at deploy time;

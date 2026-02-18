@@ -136,6 +136,7 @@ These exercise the full module evaluation including provider imports, secret pro
 ```
 devenv.nix              # Module options and config (imports everything)
 lib/helpers.nix         # Task builders + deploy pipeline
+lib/sa-swap.nix         # SA token swap snippet (shared by helpers + providers)
 lib/dependencies.nix    # Dependency validation (circular detection)
 lib/docker-compose.nix  # Shared compose file helpers
 providers/*.nix         # Cloud providers

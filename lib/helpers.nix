@@ -1,6 +1,8 @@
 { pkgs, lib, config, providers }:
 
 let
+  inherit (import ./sa-swap.nix { inherit pkgs; }) mkSASwapSnippet;
+
   # Helper function to get enabled environments
   getEnabledEnvironments = service:
     lib.filterAttrs (_: env: env.enable) service.environments;
@@ -56,6 +58,8 @@ let
 
 in
 {
+  inherit mkSASwapSnippet;
+
   # Create a task for secret export operation
   # Environment is passed as JSON input at runtime
   mkSecretExportTask = exportName: exportConfig:

@@ -23,7 +23,7 @@
   #
   # For services needing 1Password-backed secrets, set auth on the service secretspec:
   #   secretspec.auth.provider = "client_willdan";  # Provider alias (URN) for secret definitions
-  #   secretspec.auth.saToken = "client_willdan";   # SA token alias for keyring retrieval
+  #   secretspec.auth.saToken = "client_willdan";   # SA token alias (retrieved via sa-tokens provider)
   # sc up/deploy will swap the SA token; secretspec resolves the provider alias from its global config.
 
   # OPTIONAL: Local dev lifecycle via docker-compose

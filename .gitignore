@@ -3,6 +3,6 @@
 
 # Devenv generated files
 .devenv/
-.devenv.flake.nix
+.devenv.*
 devenv.lock
 
