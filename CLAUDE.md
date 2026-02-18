@@ -42,18 +42,16 @@ devenv.nix                    # Module options (saas-controller.*) + sc CLI + ta
 
 The file has two main sections:
 
-1. **`options.saas-controller`** (~lines 55-813): Module option declarations
+1. **`options.saas-controller`**: Module option declarations
    - `secretProfiles`: Controller-level secret profile definitions
-   - `releaseChannels`: Deployment channel policies
    - `externalProviders`: Registration point for custom providers
    - `services`: Service catalog (the main config surface)
    - `secret-exports`: Standalone secret export operations
 
-2. **`config`** (~lines 816-end): Implementation
+2. **`config`**: Implementation
    - Provider merging (builtin + external)
    - Secret profile composition (provider auto-export)
-   - Secretspec TOML generation
-   - `sc` CLI script (the main entrypoint)
+   - `sc` CLI script (the main entrypoint, includes secret reconciliation commands)
    - Devenv task wiring (deploy pipeline)
 
 ### Provider interface

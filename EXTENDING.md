@@ -108,7 +108,7 @@ A provider module must export functions matching this interface:
     EOF
   '';
 
-  # Optional: For hook providers (secretspec, frontegg, datadog)
+  # Optional: For hook providers (secretspec, frontegg)
   provision = serviceName: provisionConfig: servicePath: environment: serviceConfig: ''
     echo "Running provision hook for ${serviceName}/${environment}"
     # Your hook logic here
@@ -264,16 +264,10 @@ Key patterns:
       };
 
       environments = {
-        development = {
-          enable = true;
-          branch = "main";
-        };
+        local.enable = true;
 
         production = {
           enable = true;
-          branch = "main";
-          autodeploy = false;
-
           providerEnvConfig = {
             environmentVars = {
               LOG_LEVEL = "info";
@@ -293,16 +287,13 @@ Key patterns:
 # Provision the Lambda function (one-time)
 provision-projects
 
-# Deploy to development
-sc deploy my-api -e development
-
 # Deploy to production
 sc deploy my-api -e production
 ```
 
 ## Example: Custom Hook Provider
 
-Hook providers run before or after deployments (like secretspec, frontegg, datadog).
+Hook providers run before or after deployments (like secretspec, frontegg).
 
 **File: `providers/slack-notify.nix`**
 
@@ -366,7 +357,7 @@ The runtime assertions will show all available providers if you use an invalid o
 # This will fail with a helpful message listing all providers
 sc deploy my-service
 # Error: Service "my-service" uses unknown provider "typo".
-# Available providers: zuplo, frontegg, datadog, secretspec-export, aws-lambda
+# Available providers: zuplo, frontegg, secretspec-export, aws-lambda
 ```
 
 ### Test Your Provider
@@ -378,11 +369,11 @@ provision-projects
 # 2. Test local dev (test up)
 sc up my-service
 
-# 3. Deploy to dev (test deploy)
-sc deploy my-service -e development
+# 3. Deploy to production (test deploy)
+sc deploy my-service -e production
 
 # 4. Check outputs
-cat .saas-controller/outputs/my-service/development.json | jq .
+cat .saas-controller/outputs/my-service/production.json | jq .
 ```
 
 ## Best Practices
@@ -424,6 +415,6 @@ See the builtin providers for reference:
 - `providers/hello-world.nix` - Minimal provider with single-service docker-compose `up()`
 - `providers/zuplo.nix` - Full-featured provider with composite two-service `up()`
 - `providers/frontegg.nix` - Hook provider with dependency handling
-- `providers/datadog.nix` - API integration example
+- `providers/datadog.nix` - API integration example (optional hook provider)
 - `providers/secretspec-export.nix` - Secret management provider
 - `providers/TEMPLATE.nix` - Starting point with documented placeholders

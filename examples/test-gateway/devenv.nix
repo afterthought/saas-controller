@@ -18,7 +18,8 @@
       local.enable = true;
     };
     secretspec = {
-      saToken = "client-willdan";
+      auth.provider = "client_willdan";
+      auth.saToken = "client_willdan";
       environments = {
         local = { serviceProfiles = [ "tailscale" ]; };
       };

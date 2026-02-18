@@ -17,10 +17,10 @@
   #   };
   # };
   #
-  # For services needing secrets from a client-scoped 1Password vault (not the
-  # default SA token), set secretspec.saToken on the service:
-  #   secretspec.saToken = "client-willdan";  # retrieves OP_SA_CLIENT_WILLDAN from keyring
-  # sc up will swap the SA token before injecting secrets for that service.
+  # For services needing 1Password-backed secrets, set auth on the service secretspec:
+  #   secretspec.auth.provider = "client_willdan";  # Provider alias (URN) for secret definitions
+  #   secretspec.auth.saToken = "client_willdan";   # SA token alias for keyring retrieval
+  # sc up/deploy will swap the SA token; secretspec resolves the provider alias from its global config.
 
   # OPTIONAL: Local dev lifecycle via docker-compose
   # Called by: sc up <service>
@@ -59,7 +59,7 @@
   # Args:
   #   - serviceName: Name of the service being deployed
   #   - service: Full service configuration object
-  #   - environment: Target environment name (e.g., "production", "edge")
+  #   - environment: Target environment name (e.g., "local", "production", "preview")
   #   - envConfig: Environment-specific configuration
   #   - profile: SaaS controller profile name (legacy, unused)
   #   - provider: SaaS controller provider alias (legacy, unused)

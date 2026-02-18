@@ -9,7 +9,6 @@ let
     # Provision providers (for setting up services)
     secretspec = import ./providers/secretspec-export.nix { inherit pkgs lib config; };
     frontegg = import ./providers/frontegg.nix { inherit pkgs lib config; };
-    datadog = import ./providers/datadog.nix { inherit pkgs lib config; };
 
     # Generic provider for pre-authored docker-compose files
     docker-compose = import ./providers/docker-compose.nix { inherit pkgs lib config; };
@@ -37,7 +36,7 @@ let
     providers;
 
   # Convert an SA token alias to its environment variable name.
-  # "client-willdan" -> "OP_SA_CLIENT_WILLDAN"
+  # "client_willdan" -> "OP_SA_CLIENT_WILLDAN"
   toSASecretName = name:
     "OP_SA_${lib.toUpper (builtins.replaceStrings ["-"] ["_"] name)}";
 
@@ -110,202 +109,6 @@ in
       '';
     };
 
-    # Release channel definitions
-    releaseChannels = lib.mkOption {
-      type = lib.types.attrsOf (lib.types.submodule ({ name, ... }: {
-        options = {
-          enable = lib.mkEnableOption "this release channel";
-
-          displayName = lib.mkOption {
-            type = lib.types.str;
-            default = name;
-            description = "Human-readable channel name";
-            example = "Stable Production";
-          };
-
-          description = lib.mkOption {
-            type = lib.types.str;
-            description = ''
-              Purpose and audience of this channel.
-              Explains who uses this channel and what it's for.
-            '';
-            example = "Production releases for all customers";
-          };
-
-          autodeploy = lib.mkOption {
-            type = lib.types.bool;
-            default = false;
-            description = ''
-              Automatically deploy on git push to configured branch.
-
-              - true: CI/CD triggers deployment automatically
-              - false: Requires manual deployment via CLI/API
-
-              This is a channel-level policy that applies to ALL system instances
-              using this channel. Services inherit this behavior.
-            '';
-          };
-
-          versionPattern = lib.mkOption {
-            type = lib.types.enum [ "tagged" "latest" "branch" ];
-            default = "tagged";
-            description = ''
-              Version source for deployments:
-
-              - tagged: Semantic version tags (v1.2.3, v2.0.0)
-              - latest: Latest commit on main branch
-              - branch: Any branch (feature branches, development branches)
-
-              This determines what git references are valid for this channel.
-            '';
-          };
-
-          audience = lib.mkOption {
-            type = lib.types.enum [ "all" "internal" "beta" "sandbox" ];
-            default = "all";
-            description = ''
-              Target audience for this channel:
-
-              - all: All customers (production)
-              - internal: Internal users only (company employees)
-              - beta: Beta program participants
-              - sandbox: Development/testing only (ephemeral environments)
-            '';
-          };
-
-          deploymentPolicy = lib.mkOption {
-            type = lib.types.submodule {
-              options = {
-                requiresApproval = lib.mkOption {
-                  type = lib.types.bool;
-                  default = false;
-                  description = ''
-                    Require manual approval before deployment.
-                    If true, deployment commands will prompt for confirmation.
-                  '';
-                };
-
-                canaryDuration = lib.mkOption {
-                  type = lib.types.nullOr lib.types.int;
-                  default = null;
-                  description = ''
-                    Minimum canary duration in hours before promotion to stable.
-                    Only applicable for canary channels.
-                    null means no minimum duration.
-                  '';
-                };
-
-                rollbackOnError = lib.mkOption {
-                  type = lib.types.bool;
-                  default = true;
-                  description = ''
-                    Automatically rollback on deployment failure.
-                    If false, failed deployments remain in place for debugging.
-                  '';
-                };
-
-                healthCheckTimeout = lib.mkOption {
-                  type = lib.types.int;
-                  default = 300;
-                  description = ''
-                    Health check timeout in seconds after deployment.
-                    Deployment is considered failed if health checks don't pass within this time.
-                  '';
-                };
-              };
-            };
-            default = { };
-            description = ''
-              Deployment policies and safeguards for this channel.
-              These policies are enforced during deployment operations.
-            '';
-          };
-
-          metadata = lib.mkOption {
-            type = lib.types.attrs;
-            default = { };
-            description = ''
-              Additional channel-specific metadata.
-              Can be used for custom tooling, monitoring, or documentation.
-            '';
-            example = {
-              sla = "99.9%";
-              support_tier = "24/7";
-              region = "us-west-2";
-            };
-          };
-        };
-      }));
-      default = {
-        # Standard release channels with sensible defaults
-        stable = {
-          enable = true;
-          displayName = "Stable Production";
-          description = "Production releases for all customers";
-          autodeploy = false;
-          versionPattern = "tagged";
-          audience = "all";
-          deploymentPolicy = {
-            requiresApproval = true;
-            canaryDuration = 48;
-            rollbackOnError = true;
-            healthCheckTimeout = 600;
-          };
-        };
-
-        canary = {
-          enable = true;
-          displayName = "Canary Pre-Production";
-          description = "Pre-production testing before stable release";
-          autodeploy = true;
-          versionPattern = "latest";
-          audience = "internal";
-          deploymentPolicy = {
-            requiresApproval = false;
-            rollbackOnError = true;
-            healthCheckTimeout = 300;
-          };
-        };
-
-        beta = {
-          enable = true;
-          displayName = "Beta Feature Preview";
-          description = "Feature preview for beta program participants";
-          autodeploy = true;
-          versionPattern = "branch";
-          audience = "beta";
-          deploymentPolicy = {
-            requiresApproval = false;
-            rollbackOnError = true;
-          };
-        };
-
-        sandbox = {
-          enable = true;
-          displayName = "Development Sandbox";
-          description = "Development and testing environment";
-          autodeploy = true;
-          versionPattern = "branch";
-          audience = "sandbox";
-          deploymentPolicy = {
-            requiresApproval = false;
-            rollbackOnError = false;
-            healthCheckTimeout = 60;
-          };
-        };
-      };
-      description = ''
-        Release channel definitions (deployment streams).
-
-        Channels define deployment policies that are inherited by
-        system instances referencing them. This provides a centralized
-        way to manage deployment behavior across all tenants.
-
-        Standard channels (stable, canary, beta, sandbox) are provided
-        by default but can be customized or extended with additional channels.
-      '';
-    };
-
     # External provider registration
     externalProviders = lib.mkOption {
       type = lib.types.attrsOf lib.types.path;
@@ -374,25 +177,6 @@ in
                   description = "Enable this environment";
                 };
 
-                branch = lib.mkOption {
-                  type = lib.types.str;
-                  default = "main";
-                  description = "Git branch that triggers this environment";
-                };
-
-                autodeploy = lib.mkOption {
-                  type = lib.types.bool;
-                  default = false;
-                  description = "Automatically deploy on git push";
-                };
-
-                branchPattern = lib.mkOption {
-                  type = lib.types.nullOr lib.types.str;
-                  default = null;
-                  description = "Pattern for dynamic PR environments";
-                  example = "feature/*";
-                };
-
                 # SecretSpec export configuration (push secrets TO the provider)
                 # Profile is automatically derived from environment name
                 secretspec_provider = lib.mkOption {
@@ -412,7 +196,7 @@ in
                   default = { };
                   description = "Provider-specific environment configuration";
                   example = {
-                    appName = "atlas3-edge"; # Frontegg-specific
+                    appName = "atlas3-production"; # Frontegg-specific
                     # For Zuplo local environment:
                     ports = { docs = 3000; api = 9000; designer = 9100; };
                     hostnames = { docs = "atlas-docs.localhost"; api = "atlas-api.localhost"; designer = "atlas-designer.localhost"; };
@@ -427,27 +211,21 @@ in
               };
             });
             default = { };
-            description = "Environment definitions";
+            description = ''
+              Environment definitions.
+              Keys must be one of: "local", "production", "preview".
+            '';
             example = {
-              development = {
+              local = {
                 enable = true;
-                branch = "main";
-                secretspec = {
-                  provider = "saas-controller";
-                  profile = "development";
-                };
-              };
-              edge = {
-                enable = true;
-                branch = "main";
-                autodeploy = true;
-                secretspec_provider = "saas-controller"; # Uses "edge" as profile
               };
               production = {
                 enable = true;
-                branch = "main";
-                autodeploy = false;
-                secretspec_provider = "saas-controller"; # Uses "production" as profile
+                secretspec_provider = "saas-controller";
+              };
+              preview = {
+                enable = true;
+                skipSecretExport = true;
               };
             };
           };
@@ -470,7 +248,7 @@ in
                         type = lib.types.str;
                         description = ''
                           Type of pre-deploy hook provider.
-                          Can be a builtin hook provider (secretspec, frontegg, datadog)
+                          Can be a builtin hook provider (secretspec, frontegg)
                           or an external provider registered via saas-controller.externalProviders.
                         '';
                       };
@@ -522,7 +300,7 @@ in
                         type = lib.types.str;
                         description = ''
                           Type of post-deploy hook provider.
-                          Can be a builtin hook provider (secretspec, frontegg, datadog)
+                          Can be a builtin hook provider (secretspec, frontegg)
                           or an external provider registered via saas-controller.externalProviders.
                         '';
                       };
@@ -554,40 +332,6 @@ in
             };
             default = { preHooks = [ ]; postHooks = [ ]; };
             description = "Deploy configuration with pre and post hooks";
-          };
-
-          # Run configuration - secret sources for local development ('sc up')
-          run = lib.mkOption {
-            type = lib.types.submodule {
-              options = {
-                secretSource = lib.mkOption {
-                  type = lib.types.nullOr lib.types.str;
-                  default = null;
-                  description = "Default secret source provider for local development";
-                  example = "saas-controller";
-                };
-
-                environments = lib.mkOption {
-                  type = lib.types.attrsOf (lib.types.submodule {
-                    options = {
-                      secretSource = lib.mkOption {
-                        type = lib.types.nullOr lib.types.str;
-                        default = null;
-                        description = "Override secret source for this environment";
-                      };
-                    };
-                  });
-                  default = { };
-                  description = "Per-environment secret source overrides";
-                  example = {
-                    local = { secretSource = "saas-controller"; };
-                    edge = { secretSource = "saas-controller"; };
-                  };
-                };
-              };
-            };
-            default = { secretSource = null; environments = { }; };
-            description = "Run-time secret source configuration for local development";
           };
 
           # Per-service secretspec configuration for sc check-secrets
@@ -634,7 +378,7 @@ in
                         '';
                         example = lib.literalExpression ''
                           {
-                            STRIPE_API_KEY = { description = "Stripe API key"; providers = [ "client-willdan" ]; };
+                            STRIPE_API_KEY = { description = "Stripe API key"; providers = [ "client_willdan" ]; };
                           }
                         '';
                       };
@@ -647,7 +391,7 @@ in
                   example = lib.literalExpression ''
                     {
                       local = { serviceProfiles = [ "tailscale" ]; };
-                      edge = { serviceProfiles = [ "zuplo-backend" ]; };
+                      production = { serviceProfiles = [ "zuplo-backend" ]; };
                     }
                   '';
                 };
@@ -659,16 +403,38 @@ in
                   example = [ "tailscale" "backend" ];
                 };
 
-                saToken = lib.mkOption {
-                  type = lib.types.nullOr lib.types.str;
+                auth = lib.mkOption {
+                  type = lib.types.nullOr (lib.types.submodule {
+                    options = {
+                      provider = lib.mkOption {
+                        type = lib.types.str;
+                        description = ''
+                          SecretSpec provider alias (URN) used in the providers list of each
+                          secret definition in the generated secretspec.toml. Secretspec resolves
+                          this alias to a backend via its global config (~/.config/secretspec/config.toml).
+                          This is NOT passed as a CLI flag.
+                        '';
+                        example = "client_willdan";
+                      };
+                      saToken = lib.mkOption {
+                        type = lib.types.nullOr lib.types.str;
+                        default = null;
+                        description = ''
+                          SA token alias for keyring retrieval. When set, sc up retrieves
+                          the named token from the keyring and exports it as OP_SERVICE_ACCOUNT_TOKEN
+                          before running secretspec commands for this service.
+                          E.g. "client_willdan" retrieves OP_SA_CLIENT_WILLDAN.
+                        '';
+                        example = "client_willdan";
+                      };
+                    };
+                  });
                   default = null;
                   description = ''
-                    SA token alias for keyring retrieval. When set, sc up retrieves
-                    the named token from the keyring and exports it as OP_SERVICE_ACCOUNT_TOKEN
-                    before running secretspec run for this service.
-                    E.g. "client-willdan" retrieves OP_SA_CLIENT_WILLDAN.
+                    Authentication configuration for secretspec runtime access.
+                    - provider: secretspec provider alias (URN) used in secret definitions
+                    - saToken: 1Password SA token alias for keyring credential retrieval
                   '';
-                  example = "client-willdan";
                 };
               };
             });
@@ -680,43 +446,6 @@ in
             '';
           };
 
-          datadog = lib.mkOption {
-            type = lib.types.nullOr (lib.types.submodule {
-              options = {
-                enable = lib.mkOption {
-                  type = lib.types.bool;
-                  default = false;
-                  description = "Enable Datadog Software Catalog sync";
-                };
-
-                syncOn = lib.mkOption {
-                  type = lib.types.listOf (lib.types.enum [ "deploy" "on-demand" ]);
-                  default = [ "deploy" ];
-                  description = "When to sync to Datadog";
-                };
-
-                environments = lib.mkOption {
-                  type = lib.types.listOf lib.types.str;
-                  default = [ ];
-                  description = "Which environments to sync";
-                  example = [ "production" ];
-                };
-
-                entityMapping = lib.mkOption {
-                  type = lib.types.attrs;
-                  default = { };
-                  description = "Datadog entity mapping configuration";
-                  example = {
-                    kind = "service";
-                    type = "http";
-                    tier = "tier1";
-                  };
-                };
-              };
-            });
-            default = null;
-            description = "Datadog Software Catalog sync configuration";
-          };
         };
       }));
       default = { };
@@ -798,7 +527,7 @@ in
             default = { };
             description = ''
               Environments to export secrets to.
-              Profile name is automatically set to the environment name (e.g., "local", "edge", "production").
+              Profile name is automatically set to the environment name (e.g., "local", "production", "preview").
             '';
           };
 
@@ -825,6 +554,9 @@ in
 
       # Combined check: any SaaS operations enabled
       anySaasOperationsEnabled = anyServicesEnabled || anySecretExportsEnabled;
+
+      # Valid environment names (constrained set)
+      validEnvironments = [ "local" "production" "preview" ];
 
       # List of all registered providers (builtin + external)
       validProviders = lib.attrNames providers;
@@ -918,7 +650,8 @@ revision = "1.0"
 ${envSections}
 '';
 
-      # Generate all service secretspec TOML files
+
+      # Generate all service secretspec TOML files on disk
       generateAllServiceSecretspecs = ''
         mkdir -p ${config.git.root}/.saas-controller/secretspec
         ${lib.concatStringsSep "\n" (lib.mapAttrsToList (serviceName: service:
@@ -929,7 +662,6 @@ ${envSections}
             cat > ${config.git.root}/.saas-controller/secretspec/${serviceName}/secretspec.toml <<'SECRETSPEC_EOF'
 ${tomlContent}
 SECRETSPEC_EOF
-            echo "  Generated secretspec for ${serviceName}"
           ''
         ) secretspecServices)}
       '';
@@ -1054,8 +786,25 @@ SECRETSPEC_EOF
           };
         } // providerSecretProfiles);
 
-      # Runtime assertions for provider validation
+      # Runtime assertions for provider and environment validation
       assertions = lib.flatten [
+        # Validate service environment names are in the canonical set
+        (lib.mapAttrsToList
+          (serviceName: service:
+            let
+              envNames = lib.attrNames service.environments;
+              invalidEnvs = lib.filter (e: ! lib.elem e validEnvironments) envNames;
+            in
+            {
+              assertion = invalidEnvs == [ ];
+              message = ''
+                Service "${serviceName}" declares invalid environment(s): ${lib.concatStringsSep ", " invalidEnvs}
+                Valid environments: ${lib.concatStringsSep ", " validEnvironments}
+              '';
+            }
+          )
+          config.saas-controller.services)
+
         # Validate service providers
         (lib.mapAttrsToList
           (serviceName: service:
@@ -1108,7 +857,6 @@ SECRETSPEC_EOF
       # Add required packages if any SaaS operations are enabled
       packages = lib.mkIf anySaasOperationsEnabled (with pkgs; [
         jq # JSON processing
-        curl # HTTP requests (Datadog API, etc.)
         secretspec # Secret management
         _1password-cli # 1Password integration
         config.languages.javascript.package # Use configured Node.js version
@@ -1153,6 +901,9 @@ SECRETSPEC_EOF
       enterShell = lib.mkIf anySaasOperationsEnabled ''
         # Create outputs directory for task results
         mkdir -p .saas-controller/outputs
+
+        # Generate secretspec.toml files for all services
+        ${generateAllServiceSecretspecs}
       '';
 
       # Generate orchestration scripts
@@ -1216,31 +967,6 @@ SECRETSPEC_EOF
             '') enabledServices)}
 
             echo "✅ All services deployed to ''${ENVIRONMENT}"
-          '';
-        };
-
-        # Script: sync-datadog <environment>
-        # Sync service metadata to Datadog Software Catalog
-        sync-datadog = {
-          description = "Sync service metadata to Datadog Software Catalog (usage: sync-datadog <env>)";
-          exec = ''
-            ENVIRONMENT="''${1:-production}"
-
-            echo "📊 Syncing service metadata to Datadog for environment: ''${ENVIRONMENT}"
-            echo ""
-
-            ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: service:
-              lib.optionalString (service.datadog != null && service.datadog.enable) ''
-                # Check if this environment should be synced
-                if [[ " ${lib.concatStringsSep " " service.datadog.environments} " =~ " ''${ENVIRONMENT} " ]]; then
-                  echo "🔄 Syncing ${name} to Datadog..."
-                  ${providers.datadog.sync name service}
-                  echo ""
-                fi
-              ''
-            ) enabledServices)}
-
-            echo "✅ Datadog sync completed"
           '';
         };
 
@@ -1351,10 +1077,6 @@ SECRETSPEC_EOF
             echo "🔐 Checking service secrets..."
             echo ""
 
-            # Generate all secretspec TOML files
-            ${generateAllServiceSecretspecs}
-            echo ""
-
             TOTAL_CHECKS=0
             TOTAL_ERRORS=0
             SERVICES_CHECKED=0
@@ -1364,11 +1086,10 @@ SECRETSPEC_EOF
               let
                 secretspecCfg = service.secretspec;
                 tags = secretspecCfg.tags;
-                hasSAToken = secretspecCfg.saToken != null;
-                saSecretName = if hasSAToken then toSASecretName secretspecCfg.saToken else "";
+                hasAuth = secretspecCfg.auth != null;
+                hasSAToken = hasAuth && secretspecCfg.auth.saToken != null;
+                saSecretName = if hasSAToken then toSASecretName secretspecCfg.auth.saToken else "";
                 saTokensDir = config.saas-controller.saTokensDir;
-
-                # SA token swap snippet for check-secrets (same as sc up)
                 saSwapSnippet = lib.optionalString hasSAToken ''
                   # SA token swap: retrieve ${saSecretName} from keyring
                   SA_TOKEN="$(cd "${saTokensDir}" && ${pkgs.secretspec}/bin/secretspec get --provider keyring --profile default ${saSecretName})"
@@ -1479,6 +1200,259 @@ SECRETSPEC_EOF
                             sc-secret-status
                             exit $?
                             ;;
+
+                          setup-env)
+                            TARGET_ENV="''${2:-}"
+                            if [ -z "$TARGET_ENV" ]; then
+                              echo "❌ Error: Environment required" >&2
+                              echo "  Usage: sc setup-env <local|production|preview>" >&2
+                              exit 1
+                            fi
+                            if [[ ! " local production preview " =~ " $TARGET_ENV " ]]; then
+                              echo "❌ Error: Invalid environment: $TARGET_ENV" >&2
+                              echo "  Valid environments: local, production, preview" >&2
+                              exit 1
+                            fi
+
+                            echo "🔐 Setup environment: $TARGET_ENV"
+                            echo ""
+
+                            MISSING_COUNT=0
+                            ${lib.concatStringsSep "\n" (lib.mapAttrsToList (serviceName: service:
+                              let
+                                secretspecCfg = service.secretspec;
+                                hasAuth = secretspecCfg.auth != null;
+                                authLabel = if hasAuth then " (auth: ${secretspecCfg.auth.provider})" else "";
+                                hasSAToken = hasAuth && secretspecCfg.auth.saToken != null;
+                                saSecretName = if hasSAToken then toSASecretName secretspecCfg.auth.saToken else "";
+                                saTokensDir = config.saas-controller.saTokensDir;
+                                saSwapSnippet = lib.optionalString hasSAToken ''
+                                  __SC_SAVED_SA_TOKEN="''${OP_SERVICE_ACCOUNT_TOKEN:-}"
+                                  SA_TOKEN="$(cd "${saTokensDir}" && ${pkgs.secretspec}/bin/secretspec get --provider keyring --profile default ${saSecretName})"
+                                  if [ -n "$SA_TOKEN" ]; then export OP_SERVICE_ACCOUNT_TOKEN="$SA_TOKEN"; fi
+                                '';
+                                saRestoreSnippet = lib.optionalString hasSAToken ''
+                                  export OP_SERVICE_ACCOUNT_TOKEN="$__SC_SAVED_SA_TOKEN"
+                                '';
+                              in
+                              lib.concatStringsSep "\n" (lib.mapAttrsToList (envName: envCfg:
+                                let
+                                  profiles = config.saas-controller.secretProfiles;
+                                  providerObj = providers.${service.provider} or {};
+                                  providerProfileNames = lib.attrNames (providerObj.secretProfiles or {});
+                                  allProfileNames = lib.unique (providerProfileNames ++ envCfg.serviceProfiles);
+                                  collectSecrets = profileNames:
+                                    lib.foldl (acc: pn:
+                                      let ps = profiles.${pn} or {};
+                                      in acc // (lib.filterAttrs (n: _: ! (acc ? ${n})) ps)
+                                    ) {} profileNames;
+                                  profileSecrets = collectSecrets allProfileNames;
+                                  inlineSecrets = envCfg.secrets or {};
+                                  extraSecrets = lib.filterAttrs (n: _: ! (profileSecrets ? ${n})) inlineSecrets;
+                                  allSecrets = profileSecrets // extraSecrets;
+                                  requiredSecrets = lib.filterAttrs (_: s: (s.required or true) && (s.default or null) == null) allSecrets;
+                                  optionalSecrets = lib.filterAttrs (_: s: !(s.required or true) || (s.default or null) != null) allSecrets;
+                                  secretNames = lib.attrNames allSecrets;
+                                in ''
+                              if [ "$TARGET_ENV" = "${envName}" ]; then
+                                ${saSwapSnippet}
+                                echo "📋 ${serviceName}${authLabel}:"
+                                echo "  Profiles: ${lib.concatStringsSep ", " allProfileNames}"
+                                echo "  Secrets: ${toString (builtins.length secretNames)} total (${toString (builtins.length (lib.attrNames requiredSecrets))} required)"
+
+                                if (cd ${config.git.root}/.saas-controller/secretspec/${serviceName} && ${pkgs.secretspec}/bin/secretspec check --profile ${envName} 2>/dev/null); then
+                                  echo "  ✅ All secrets available"
+                                else
+                                  echo "  ❌ Some secrets missing — required:"
+                                  ${lib.concatStringsSep "\n" (lib.mapAttrsToList (secretName: secretDef: ''
+                                  echo "     - ${secretName}: ${secretDef.description}"
+                                  '') requiredSecrets)}
+                                  MISSING_COUNT=$((MISSING_COUNT + 1))
+                                fi
+                                ${saRestoreSnippet}
+                                echo ""
+                              fi
+                                '') secretspecCfg.environments)
+                            ) secretspecServices)}
+
+                            if [ $MISSING_COUNT -gt 0 ]; then
+                              echo "⚠️  $MISSING_COUNT service(s) have missing secrets in $TARGET_ENV"
+                              exit 1
+                            else
+                              echo "✅ All required secrets are set for $TARGET_ENV"
+                            fi
+                            exit 0
+                            ;;
+
+                          diff-secrets)
+                            ENV1="''${2:-}"
+                            ENV2="''${3:-}"
+                            if [ -z "$ENV1" ] || [ -z "$ENV2" ]; then
+                              echo "❌ Error: Two environments required" >&2
+                              echo "  Usage: sc diff-secrets <env1> <env2>" >&2
+                              exit 1
+                            fi
+                            for e in "$ENV1" "$ENV2"; do
+                              if [[ ! " local production preview " =~ " $e " ]]; then
+                                echo "❌ Error: Invalid environment: $e" >&2
+                                echo "  Valid environments: local, production, preview" >&2
+                                exit 1
+                              fi
+                            done
+
+                            echo "🔍 Diff secrets: $ENV1 vs $ENV2"
+                            echo ""
+                            printf "%-25s %-15s %-15s %s\n" "SERVICE" "$ENV1" "$ENV2" ""
+                            printf "%-25s %-15s %-15s %s\n" "───────" "───────" "───────" ""
+
+                            DIFF_COUNT=0
+                            ${lib.concatStringsSep "\n" (lib.mapAttrsToList (serviceName: service:
+                              let
+                                secretspecCfg = service.secretspec;
+                                hasAuth = secretspecCfg.auth != null;
+                                hasSAToken = hasAuth && secretspecCfg.auth.saToken != null;
+                                saSecretName = if hasSAToken then toSASecretName secretspecCfg.auth.saToken else "";
+                                saTokensDir = config.saas-controller.saTokensDir;
+                                saSwapSnippet = lib.optionalString hasSAToken ''
+                                  __SC_SAVED_SA_TOKEN="''${OP_SERVICE_ACCOUNT_TOKEN:-}"
+                                  SA_TOKEN="$(cd "${saTokensDir}" && ${pkgs.secretspec}/bin/secretspec get --provider keyring --profile default ${saSecretName})"
+                                  if [ -n "$SA_TOKEN" ]; then export OP_SERVICE_ACCOUNT_TOKEN="$SA_TOKEN"; fi
+                                '';
+                                saRestoreSnippet = lib.optionalString hasSAToken ''
+                                  export OP_SERVICE_ACCOUNT_TOKEN="$__SC_SAVED_SA_TOKEN"
+                                '';
+                                envNames = lib.attrNames secretspecCfg.environments;
+                              in ''
+                              ${saSwapSnippet}
+                              __sc_s1="n/a"; __sc_s2="n/a"
+                              ${lib.concatStringsSep "\n" (map (envName: ''
+                              if [ "$ENV1" = "${envName}" ]; then
+                                if (cd ${config.git.root}/.saas-controller/secretspec/${serviceName} && ${pkgs.secretspec}/bin/secretspec check --profile ${envName} 2>/dev/null); then
+                                  __sc_s1="✅ ok"
+                                else
+                                  __sc_s1="❌ missing"
+                                fi
+                              fi
+                              if [ "$ENV2" = "${envName}" ]; then
+                                if (cd ${config.git.root}/.saas-controller/secretspec/${serviceName} && ${pkgs.secretspec}/bin/secretspec check --profile ${envName} 2>/dev/null); then
+                                  __sc_s2="✅ ok"
+                                else
+                                  __sc_s2="❌ missing"
+                                fi
+                              fi
+                              '') envNames)}
+                              __sc_marker=""
+                              if [ "$__sc_s1" != "$__sc_s2" ]; then
+                                __sc_marker="⚠️  DIFF"
+                                DIFF_COUNT=$((DIFF_COUNT + 1))
+                              fi
+                              printf "%-25s %-15s %-15s %s\n" "${serviceName}" "$__sc_s1" "$__sc_s2" "$__sc_marker"
+                              ${saRestoreSnippet}
+                            '') secretspecServices)}
+
+                            echo ""
+                            if [ $DIFF_COUNT -eq 0 ]; then
+                              echo "✅ No differences found between $ENV1 and $ENV2"
+                            else
+                              echo "⚠️  $DIFF_COUNT service(s) differ between $ENV1 and $ENV2"
+                            fi
+                            exit 0
+                            ;;
+
+                          reconcile-secrets)
+                            RECON_ENV=""
+                            shift
+                            while [[ $# -gt 0 ]]; do
+                              case $1 in
+                                --environment|-e) RECON_ENV="$2"; shift 2 ;;
+                                *) echo "❌ Error: Unknown option: $1" >&2; exit 1 ;;
+                              esac
+                            done
+
+                            if [ -n "$RECON_ENV" ]; then
+                              if [[ ! " local production preview " =~ " $RECON_ENV " ]]; then
+                                echo "❌ Error: Invalid environment: $RECON_ENV" >&2
+                                echo "  Valid environments: local, production, preview" >&2
+                                exit 1
+                              fi
+                              ENVS="$RECON_ENV"
+                            else
+                              ENVS="local production preview"
+                            fi
+
+                            echo "🔐 Secret Reconciliation"
+                            echo ""
+
+                            MISSING_REQUIRED=0
+                            for CURRENT_ENV in $ENVS; do
+                              echo "━━━ Environment: $CURRENT_ENV ━━━"
+                              echo ""
+
+                              ${lib.concatStringsSep "\n" (lib.mapAttrsToList (serviceName: service:
+                                let
+                                  secretspecCfg = service.secretspec;
+                                  hasAuth = secretspecCfg.auth != null;
+                                  authLabel = if hasAuth then " (auth: ${secretspecCfg.auth.provider})" else "";
+                                  hasSAToken = hasAuth && secretspecCfg.auth.saToken != null;
+                                  saSecretName = if hasSAToken then toSASecretName secretspecCfg.auth.saToken else "";
+                                  saTokensDir = config.saas-controller.saTokensDir;
+                                  saSwapSnippet = lib.optionalString hasSAToken ''
+                                    __SC_SAVED_SA_TOKEN="''${OP_SERVICE_ACCOUNT_TOKEN:-}"
+                                    SA_TOKEN="$(cd "${saTokensDir}" && ${pkgs.secretspec}/bin/secretspec get --provider keyring --profile default ${saSecretName})"
+                                    if [ -n "$SA_TOKEN" ]; then export OP_SERVICE_ACCOUNT_TOKEN="$SA_TOKEN"; fi
+                                  '';
+                                  saRestoreSnippet = lib.optionalString hasSAToken ''
+                                    export OP_SERVICE_ACCOUNT_TOKEN="$__SC_SAVED_SA_TOKEN"
+                                  '';
+                                in
+                                lib.concatStringsSep "\n" (lib.mapAttrsToList (envName: envCfg:
+                                  let
+                                    profiles = config.saas-controller.secretProfiles;
+                                    providerObj = providers.${service.provider} or {};
+                                    providerProfileNames = lib.attrNames (providerObj.secretProfiles or {});
+                                    allProfileNames = lib.unique (providerProfileNames ++ envCfg.serviceProfiles);
+                                    collectSecrets = profileNames:
+                                      lib.foldl (acc: pn:
+                                        let ps = profiles.${pn} or {};
+                                        in acc // (lib.filterAttrs (n: _: ! (acc ? ${n})) ps)
+                                      ) {} profileNames;
+                                    profileSecrets = collectSecrets allProfileNames;
+                                    inlineSecrets = envCfg.secrets or {};
+                                    extraSecrets = lib.filterAttrs (n: _: ! (profileSecrets ? ${n})) inlineSecrets;
+                                    allSecrets = profileSecrets // extraSecrets;
+                                    secretCount = builtins.length (lib.attrNames allSecrets);
+                                    requiredCount = builtins.length (lib.attrNames (lib.filterAttrs (_: s: (s.required or true) && (s.default or null) == null) allSecrets));
+                                  in ''
+                              if [ "$CURRENT_ENV" = "${envName}" ]; then
+                                ${saSwapSnippet}
+                                echo -n "  📋 ${serviceName}${authLabel} (${toString secretCount} secrets, ${toString requiredCount} required): "
+                                if (cd ${config.git.root}/.saas-controller/secretspec/${serviceName} && ${pkgs.secretspec}/bin/secretspec check --profile ${envName} 2>/dev/null); then
+                                  echo "✅ ok"
+                                else
+                                  echo "❌ MISSING"
+                                  MISSING_REQUIRED=$((MISSING_REQUIRED + 1))
+                                  echo "     Required secrets:"
+                                  ${lib.concatStringsSep "\n" (lib.mapAttrsToList (secretName: secretDef:
+                                    lib.optionalString ((secretDef.required or true) && (secretDef.default or null) == null)
+                                    ''echo "     - ${secretName}: ${secretDef.description}"''
+                                  ) allSecrets)}
+                                fi
+                                ${saRestoreSnippet}
+                              fi
+                                '') secretspecCfg.environments)
+                              ) secretspecServices)}
+                              echo ""
+                            done
+
+                            if [ $MISSING_REQUIRED -gt 0 ]; then
+                              echo "⚠️  $MISSING_REQUIRED service/environment(s) have missing secrets"
+                              exit 1
+                            else
+                              echo "✅ All required secrets are present"
+                            fi
+                            exit 0
+                            ;;
+
                         esac
 
                         # Parse arguments for standard commands
@@ -1507,9 +1481,6 @@ SECRETSPEC_EOF
                           up)
                             # Default environment for 'up' is 'local'
                             ENVIRONMENT="''${ENVIRONMENT:-local}"
-
-                            # --- Generate secretspec TOMLs (for per-service injection below) ---
-                            ${generateAllServiceSecretspecs}
 
                             # --- Hostname derivation ---
                             if [ -n "''${VK_WORKSPACE_ID:-}" ]; then
@@ -1559,13 +1530,11 @@ SECRETSPEC_EOF
                                   provider = providers.${service.provider} or null;
                                   hasUp = provider != null && provider ? up;
                                   upScript = if hasUp then provider.up serviceName service else "";
-                                  secretspecDir = "${config.git.root}/.saas-controller/secretspec/${serviceName}";
                                   hasSecretspec = service.secretspec != null;
-                                  hasSAToken = hasSecretspec && service.secretspec.saToken != null;
-                                  saSecretName = if hasSAToken then toSASecretName service.secretspec.saToken else "";
+                                  hasAuth = hasSecretspec && service.secretspec.auth != null;
+                                  hasSAToken = hasAuth && service.secretspec.auth.saToken != null;
+                                  saSecretName = if hasSAToken then toSASecretName service.secretspec.auth.saToken else "";
                                   saTokensDir = config.saas-controller.saTokensDir;
-
-                                  # SA token swap snippet (only if saToken is configured)
                                   saSwapSnippet = lib.optionalString hasSAToken ''
                                     # SA token swap: retrieve ${saSecretName} from keyring
                                     SA_TOKEN="$(cd "${saTokensDir}" && ${pkgs.secretspec}/bin/secretspec get --provider keyring --profile default ${saSecretName})"
@@ -1576,6 +1545,7 @@ SECRETSPEC_EOF
                                     fi
                                     export OP_SERVICE_ACCOUNT_TOKEN="$SA_TOKEN"
                                   '';
+                                  secretspecDir = "${config.git.root}/.saas-controller/secretspec/${serviceName}";
 
                                   # Wrap upScript with secretspec run if service has secretspec
                                   wrappedUpScript = if hasSecretspec then ''
@@ -1612,12 +1582,11 @@ SECRETSPEC_EOF
                                   provider = providers.${service.provider} or null;
                                   hasUp = provider != null && provider ? up;
                                   upScript = if hasUp then provider.up serviceName service else "";
-                                  secretspecDir = "${config.git.root}/.saas-controller/secretspec/${serviceName}";
                                   hasSecretspec = service.secretspec != null;
-                                  hasSAToken = hasSecretspec && service.secretspec.saToken != null;
-                                  saSecretName = if hasSAToken then toSASecretName service.secretspec.saToken else "";
+                                  hasAuth = hasSecretspec && service.secretspec.auth != null;
+                                  hasSAToken = hasAuth && service.secretspec.auth.saToken != null;
+                                  saSecretName = if hasSAToken then toSASecretName service.secretspec.auth.saToken else "";
                                   saTokensDir = config.saas-controller.saTokensDir;
-
                                   saSwapSnippet = lib.optionalString hasSAToken ''
                                     # SA token swap: retrieve ${saSecretName} from keyring
                                     SA_TOKEN="$(cd "${saTokensDir}" && ${pkgs.secretspec}/bin/secretspec get --provider keyring --profile default ${saSecretName})"
@@ -1628,6 +1597,7 @@ SECRETSPEC_EOF
                                     fi
                                     export OP_SERVICE_ACCOUNT_TOKEN="$SA_TOKEN"
                                   '';
+                                  secretspecDir = "${config.git.root}/.saas-controller/secretspec/${serviceName}";
 
                                   wrappedUpScript = if hasSecretspec then ''
                                     ${saSwapSnippet}
@@ -1651,8 +1621,8 @@ SECRETSPEC_EOF
                             ;;
 
                           deploy)
-                            # Default environment for 'deploy' is 'development'
-                            ENVIRONMENT="''${ENVIRONMENT:-development}"
+                            # Default environment for 'deploy' is 'production'
+                            ENVIRONMENT="''${ENVIRONMENT:-production}"
 
                             if [ -n "$SERVICE" ]; then
                               echo "🚀 Deploying service: $SERVICE (environment: $ENVIRONMENT)"
@@ -1726,21 +1696,24 @@ SECRETSPEC_EOF
               sc <command> [service] [--environment <env>]
 
             Commands:
-              up              Start local dev services via docker-compose (default env: local)
-              deploy          Deploy service(s) with pre/post hooks (default env: development)
-              undeploy        Remove a persistent service installed by deploy
-              check-secrets   Validate secrets for all services
-              secret-status   Show secret-to-service mapping table
-              help            Show this help message
+              up                Start local dev services via docker-compose (default env: local)
+              deploy            Deploy service(s) with pre/post hooks (default env: production)
+              undeploy          Remove a persistent service installed by deploy
+              check-secrets     Validate secrets for all services
+              secret-status     Show secret-to-service mapping table
+              setup-env         Report secret status for an environment
+              diff-secrets      Compare secret status between two environments
+              reconcile-secrets Show comprehensive secret status across environments
+              help              Show this help message
 
             Examples:
               sc up                                      # Start all local services
               sc up atlas3-dev-gateway                   # Start specific service
-              sc up --environment edge                   # Start all services for edge env
+              sc up --environment preview                # Start all services for preview env
 
-              sc deploy                                  # Deploy all to development (default)
+              sc deploy                                  # Deploy all to production (default)
               sc deploy --environment production         # Deploy all to production
-              sc deploy atlas3-dev-gateway -e edge       # Deploy specific service to edge
+              sc deploy atlas3-dev-gateway -e preview     # Deploy specific service to preview
 
               sc undeploy atlas3-dev-gateway             # Remove persistent service
 
@@ -1750,9 +1723,14 @@ SECRETSPEC_EOF
 
               sc secret-status                           # Show secret-to-service mapping
 
+              sc setup-env production                    # Check all secrets for production
+              sc diff-secrets local production           # Compare secrets between environments
+              sc reconcile-secrets                       # Show all secrets across all environments
+              sc reconcile-secrets -e production         # Show secrets for one environment
+
             Options:
-              --environment, -e <env>   Target environment (local, development, edge, production)
-                                        Defaults: up=local, deploy=development
+              --environment, -e <env>   Target environment (local, production, preview)
+                                        Defaults: up=local, deploy=production
               --help, -h                Show this help message
 
             Note: Deploy runs pre-hooks, deploys the service, then runs post-hooks automatically.
@@ -1800,16 +1778,37 @@ SECRETSPEC_EOF
                 preDeployTask = helpers.mkPreDeployTask serviceName service;
                 deployTask = helpers.mkDeployTask serviceName service;
                 postDeployTask = helpers.mkPostDeployTask serviceName service;
+
+                # Write secretspec TOML to deploy dir for persistent service wrappers
+                hasSecretspec = service.secretspec != null;
+                tomlContent = if hasSecretspec then mkServiceSecretspecToml serviceName service else "";
+                writeToml = lib.optionalString hasSecretspec ''
+                  mkdir -p ${config.git.root}/.saas-controller/deploy/${serviceName}
+                  cat > ${config.git.root}/.saas-controller/deploy/${serviceName}/secretspec.toml <<'__SECRETSPEC_TOML_EOF'
+${tomlContent}
+__SECRETSPEC_TOML_EOF
+                '';
+
+                # Augment the pre-deploy task to write TOML before hooks
+                augmentedPreDeployTask = {
+                  name = preDeployTask.name;
+                  value = preDeployTask.value // {
+                    exec = ''
+                      ${writeToml}
+                      ${preDeployTask.value.exec}
+                    '';
+                  };
+                };
                 serviceDeps = helpers.buildDeployDependencies serviceName service;
               in
               [
-                # Pre-deploy task (depends on other services' post-deploy tasks)
-                (lib.nameValuePair preDeployTask.name (preDeployTask.value // (lib.optionalAttrs (serviceDeps != [ ]) {
+                # Pre-deploy task (depends on other services' post-deploy tasks, writes secretspec TOML)
+                (lib.nameValuePair augmentedPreDeployTask.name (augmentedPreDeployTask.value // (lib.optionalAttrs (serviceDeps != [ ]) {
                   after = serviceDeps;
                 })))
                 # Deploy task (depends on pre-deploy)
                 (lib.nameValuePair deployTask.name (deployTask.value // {
-                  after = [ preDeployTask.name ];
+                  after = [ augmentedPreDeployTask.name ];
                 }))
                 # Post-deploy task (depends on deploy)
                 (lib.nameValuePair postDeployTask.name (postDeployTask.value // {

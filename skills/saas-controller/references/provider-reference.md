@@ -35,7 +35,7 @@ saas-controller.services.my-gateway = {
   };
   environments = {
     local.enable = true;
-    edge = { enable = true; autodeploy = true; };
+    production.enable = true;
   };
 };
 ```

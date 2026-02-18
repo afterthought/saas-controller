@@ -2,7 +2,7 @@
 name: saas-controller
 description: >
   Configure and operate saas-controller services in devenv projects.
-  Use when configuring cloud services (Zuplo, Frontegg, Datadog),
+  Use when configuring cloud services (Zuplo, Frontegg),
   running sc up for local dev, deploying with sc deploy, managing
   secrets with secretspec profiles, or troubleshooting saas-controller.
 license: MIT
@@ -112,23 +112,22 @@ A Zuplo API gateway with secretspec profiles, multiple environments, and secret 
 
     environments = {
       local.enable = true;
-      edge = {
-        enable = true;
-        autodeploy = true;          # Auto-deploy on git push
-      };
+      production.enable = true;
+      preview.enable = true;
     };
 
     # Secret management
     secretspec = {
-      saToken = "client-myorg";     # 1Password SA token alias
+      auth.provider = "client-myorg";  # SecretSpec provider alias
+      auth.saToken = "client-myorg";   # 1Password SA token alias
       environments = {
         local = {
           serviceProfiles = [ "tailscale" ];
           # → validates TS_CLIENT_SECRET, TS_CLIENT_ID
         };
-        edge = {
-          serviceProfiles = [ "tailscale" "zuplo-backend" ];
-          # → validates tailscale + zuplo secrets
+        production = {
+          serviceProfiles = [ "zuplo-backend" ];
+          # → validates zuplo secrets for production
         };
       };
       tags = [ "tailscale" "zuplo" ]; # For filtered checking
@@ -139,7 +138,7 @@ A Zuplo API gateway with secretspec profiles, multiple environments, and secret 
 
 ```bash
 sc up                              # Start locally with tailscale HTTPS
-sc deploy my-gateway -e edge       # Deploy to edge environment
+sc deploy my-gateway -e production  # Deploy to production
 sc check-secrets --tag tailscale   # Validate tailscale secrets
 ```
 
@@ -176,15 +175,16 @@ saas-controller.secretProfiles = {
 
 ```nix
 services.my-service.secretspec = {
-  saToken = "client-myorg";          # 1Password SA token alias
+  auth.provider = "client-myorg";      # SecretSpec provider alias
+  auth.saToken = "client-myorg";       # 1Password SA token alias
   environments = {
     local = {
       serviceProfiles = [ "tailscale" ];
       # Only tailscale secrets needed locally
     };
-    edge = {
-      serviceProfiles = [ "tailscale" "my-api-keys" ];
-      # Both profiles needed for edge deployment
+    production = {
+      serviceProfiles = [ "my-api-keys" ];
+      # API keys needed for production deployment
     };
   };
   tags = [ "tailscale" ];            # For sc check-secrets --tag
@@ -212,12 +212,11 @@ sc secret-status                         # Show secret-to-service mapping table
 # Local development
 sc up                                    # Start all local services
 sc up my-gateway                         # Start specific service
-sc up --environment edge                 # Start for specific environment
 
 # Deployment
-sc deploy                                # Deploy all (default environment)
+sc deploy                                # Deploy all to production (default)
 sc deploy --environment production       # Deploy all to production
-sc deploy my-gateway -e edge             # Deploy specific service to edge
+sc deploy my-gateway -e preview          # Deploy specific service to preview
 sc undeploy my-gateway                   # Remove persistent service
 
 # Secret management
@@ -225,6 +224,12 @@ sc check-secrets                         # Validate all service secrets
 sc check-secrets --tag tailscale         # Filter by tag
 sc check-secrets --service my-gateway    # Filter by service
 sc secret-status                         # Secret-to-service mapping table
+
+# Secret reconciliation
+sc setup-env production                  # Check all secrets for production
+sc diff-secrets local production         # Compare secrets between environments
+sc reconcile-secrets                     # Show all secrets across all environments
+sc reconcile-secrets -e production       # Show secrets for one environment
 
 # Other
 sc help                                  # Show help
@@ -238,7 +243,7 @@ provision-projects                       # One-time project setup
 devenv tasks run saas:up
 
 # Deploy with environment via task input
-DEVENV_TASK_INPUT='{"environment": "edge"}' devenv tasks run saas-deploy:my-gateway
+DEVENV_TASK_INPUT='{"environment": "production"}' devenv tasks run saas-deploy:my-gateway
 ```
 
 ## Provider Summary

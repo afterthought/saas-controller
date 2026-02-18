@@ -23,11 +23,6 @@
 let
   compose = import ../lib/docker-compose.nix { inherit lib config; };
 
-  # Convert an SA token alias to its environment variable name.
-  # "client-willdan" -> "OP_SA_CLIENT_WILLDAN"
-  toSASecretName = name:
-    "OP_SA_${lib.toUpper (builtins.replaceStrings ["-"] ["_"] name)}";
-
   # Shared Nix-time setup for a service. Returns an attrset of derived values
   # used by both `up` and `deploy`.
   mkSetup = serviceName: service:
@@ -170,26 +165,29 @@ in
       wrapperScript = "${s.composeDir}/sc-service.sh";
 
       hasSecretspec = service.secretspec != null;
-      secretspecDir = "${config.git.root}/.saas-controller/secretspec/${serviceName}";
-      hasSAToken = hasSecretspec && service.secretspec.saToken != null;
-      saSecretName = if hasSAToken then toSASecretName service.secretspec.saToken else "";
+      hasAuth = hasSecretspec && service.secretspec.auth != null;
+      hasSAToken = hasAuth && service.secretspec.auth.saToken != null;
+      saSecretName = if hasSAToken then "OP_SA_${lib.toUpper (builtins.replaceStrings ["-"] ["_"] service.secretspec.auth.saToken)}" else "";
       saTokensDir = config.saas-controller.saTokensDir;
 
-      # SA token swap snippet for wrapper script
+      # SA token swap for the wrapper script (retrieves token from keyring at service start)
       saSwapSnippet = lib.optionalString hasSAToken ''
         # SA token swap: retrieve ${saSecretName} from keyring
         SA_TOKEN="$(cd "${saTokensDir}" && ${pkgs.secretspec}/bin/secretspec get --provider keyring --profile default ${saSecretName})"
         if [ -z "$SA_TOKEN" ]; then
-          echo "Failed to retrieve ${saSecretName} from keyring for ${serviceName}." >&2
-          echo "Run 'store-sa-tokens' to populate SA tokens in the keyring." >&2
+          echo "Error: Failed to retrieve ${saSecretName} from keyring for ${serviceName}." >&2
+          echo "  Run 'store-sa-tokens' to populate SA tokens in the keyring." >&2
           exit 1
         fi
         export OP_SERVICE_ACCOUNT_TOKEN="$SA_TOKEN"
       '';
 
       # The command the wrapper runs to start the compose stack
+      # For secretspec services, TOML is written to the deploy dir at deploy time;
+      # the wrapper cd's to the deploy dir so secretspec reads it from CWD.
       startCmd = if hasSecretspec then ''
-        cd "${secretspecDir}"
+        ${saSwapSnippet}
+        cd "${deployDir}"
         exec ${pkgs.secretspec}/bin/secretspec run --profile "${environment}" -- ${s.composeCmd} up -d --build --wait
       '' else ''
         exec ${s.composeCmd} up -d --build --wait
@@ -239,7 +237,6 @@ in
       export TS_HOSTNAME="__PLACEHOLDER_TS_HOSTNAME__"
       export FQDN="__PLACEHOLDER_FQDN__"
 
-      ${saSwapSnippet}
       ${startCmd}
       __SC_WRAPPER_EOF
 

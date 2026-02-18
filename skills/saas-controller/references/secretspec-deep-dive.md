@@ -1,6 +1,6 @@
 # SecretSpec Deep Dive
 
-This reference covers the full secretspec configuration system: controller-level profiles, per-service composition, SA token management, and validation commands.
+This reference covers the full secretspec configuration system: controller-level profiles, per-service composition, auth provider management, and validation commands.
 
 ## Architecture
 
@@ -16,7 +16,7 @@ This reference covers the full secretspec configuration system: controller-level
 │ services.<name>.secretspec.environments.<env>.serviceProfiles│
 │ ┌────────────────────────────────────────────────────────┐   │
 │ │  local  = { serviceProfiles = [ "tailscale" ]; }       │   │
-│ │  edge   = { serviceProfiles = [ "tailscale" "zuplo" ]; │   │
+│ │  prod.  = { serviceProfiles = [ "tailscale" "zuplo" ]; │   │
 │ │            secrets = { EXTRA = { ... }; }; }           │   │
 │ └────────────────────────────────────────────────────────┘   │
 │                          │                                    │
@@ -69,8 +69,10 @@ Configure which profiles a service needs per environment:
 
 ```nix
 services.my-service.secretspec = {
-  # SA token alias for 1Password keyring retrieval
-  saToken = "client-myorg";
+  # SecretSpec provider alias for runtime secret resolution
+  auth.provider = "client-myorg";
+  # 1Password SA token alias for keyring retrieval
+  auth.saToken = "client-myorg";
 
   # Profile composition per environment
   environments = {
@@ -78,9 +80,9 @@ services.my-service.secretspec = {
       serviceProfiles = [ "tailscale" ];
       # Only tailscale secrets validated locally
     };
-    edge = {
-      serviceProfiles = [ "tailscale" "zuplo-backend" ];
-      # Both profiles validated for edge
+    production = {
+      serviceProfiles = [ "zuplo-backend" ];
+      # Zuplo secrets validated for production
 
       # Per-instance extra secrets (merge with profiles)
       secrets = {
@@ -102,7 +104,8 @@ services.my-service.secretspec = {
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `saToken` | `nullOr str` | `null` | 1Password SA token alias for keyring retrieval |
+| `auth.provider` | `str` | (required when auth is set) | SecretSpec provider alias (URN) used in secret definitions; resolved by secretspec's global config |
+| `auth.saToken` | `nullOr str` | `null` | 1Password SA token alias for keyring retrieval |
 | `environments` | `attrsOf { serviceProfiles, secrets }` | (required) | Per-environment profile composition |
 | `tags` | `listOf str` | `[]` | Tags for `sc check-secrets --tag` filtering |
 
@@ -113,23 +116,20 @@ services.my-service.secretspec = {
 | `serviceProfiles` | `listOf str` | (required) | Profile names from `saas-controller.secretProfiles` |
 | `secrets` | `attrsOf secretDef` | `{}` | Per-instance extra secrets (merge with profiles; profiles take precedence on duplicates) |
 
-## SA Token Retrieval
+## SA Token and Auth Provider
 
-When `secretspec.saToken` is set, `sc up` and `sc check-secrets` automatically:
+Two options control runtime secret authentication:
 
-1. Convert the alias to an env var name: `"client-myorg"` -> `OP_SA_CLIENT_MYORG`
-2. Read the token from the macOS keyring (stored at `saas-controller.saTokensDir`)
-3. Export it as `OP_SERVICE_ACCOUNT_TOKEN` before running secretspec commands
+- **`auth.provider`**: SecretSpec provider alias (URN). Used in the `providers` list of each secret definition in the generated secretspec.toml. Secretspec resolves this alias to a backend via its global config (`~/.config/secretspec/config.toml`). This is NOT passed as a CLI flag.
+- **`auth.saToken`**: 1Password SA token alias. When set, `sc up` and `sc check-secrets` retrieve the named token from the macOS keyring and export it as `OP_SERVICE_ACCOUNT_TOKEN` before running secretspec commands. E.g. `"client_willdan"` retrieves `OP_SA_CLIENT_WILLDAN`.
 
-This allows per-service 1Password vault scoping without manual token management.
+Use both together for 1Password-backed services. Use only `auth.provider` for providers that don't need an SA token (e.g. `.env` files).
 
 ```nix
-# Service uses a client-specific 1Password vault
-secretspec.saToken = "client-willdan";
-# sc up will automatically:
-#   1. Read OP_SA_CLIENT_WILLDAN from keyring
-#   2. Export as OP_SERVICE_ACCOUNT_TOKEN
-#   3. Run secretspec commands with that token
+secretspec = {
+  auth.provider = "client_willdan";  # Provider alias resolved by secretspec global config
+  auth.saToken = "client_willdan";   # Retrieves OP_SA_CLIENT_WILLDAN from keyring
+};
 ```
 
 ## Provider Auto-Export
@@ -188,9 +188,9 @@ sc check-secrets --help
 
 For each service/environment combination, the command:
 1. Resolves the composed secret list (profiles + provider auto-export + inline secrets)
-2. Generates a temporary `secretspec.toml` with all required secrets
-3. Swaps the SA token if `saToken` is configured
-4. Runs `secretspec check` against each provider
+2. Reads secretspec.toml from the service's secretspec directory (`.saas-controller/secretspec/<service>/`)
+3. Swaps the SA token if `auth.saToken` is configured (secretspec resolves the provider alias from the secret definitions)
+4. Runs `secretspec check --profile <env>` for each environment
 
 Output shows pass/fail per service per environment with missing secret details.
 
@@ -226,8 +226,8 @@ Only services with `secretspec != null` participate in `sc check-secrets`.
       TS_CLIENT_ID = { description = "OAuth client ID"; required = false; providers = [ "saas-controller" ]; };
     };
     billing = {
-      STRIPE_SECRET_KEY = { description = "Stripe secret key"; providers = [ "client-willdan" ]; };
-      STRIPE_WEBHOOK_SECRET = { description = "Stripe webhook signing secret"; providers = [ "client-willdan" ]; };
+      STRIPE_SECRET_KEY = { description = "Stripe secret key"; providers = [ "client_willdan" ]; };
+      STRIPE_WEBHOOK_SECRET = { description = "Stripe webhook signing secret"; providers = [ "client_willdan" ]; };
     };
   };
 
@@ -242,21 +242,22 @@ Only services with `secretspec != null` participate in `sc check-secrets`.
     };
     environments = {
       local.enable = true;
-      edge = { enable = true; autodeploy = true; };
+      production.enable = true;
     };
     secretspec = {
-      saToken = "client-willdan";
+      auth.provider = "client_willdan";
+      auth.saToken = "client_willdan";
       environments = {
         local = {
           serviceProfiles = [ "tailscale" ];
           # zuplo + zudoku profiles auto-included from provider
         };
-        edge = {
-          serviceProfiles = [ "tailscale" "billing" ];
+        production = {
+          serviceProfiles = [ "billing" ];
           # zuplo + zudoku auto-included, plus billing manually added
           secrets = {
-            CUSTOM_EDGE_TOKEN = {
-              description = "Edge-only auth token";
+            CUSTOM_PROD_TOKEN = {
+              description = "Production-only auth token";
               providers = [ "saas-controller" ];
             };
           };
