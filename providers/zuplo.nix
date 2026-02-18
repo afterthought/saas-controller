@@ -13,13 +13,11 @@ let
       ZUDOKU_PUBLIC_AUTH_CLIENT_ID = {
         description = "Frontegg OAuth client ID for Zudoku docs authentication";
         required = false;
-        providers = [ "saas-controller" ];
         default = "22426e52-307b-4bf0-92c7-6f978f78a966";
       };
       ZUDOKU_PUBLIC_AUTH_ISSUER = {
         description = "Frontegg issuer URL for Zudoku docs authentication";
         required = false;
-        providers = [ "saas-controller" ];
         default = "https://app-5lp8mgkiydtb.us.frontegg.com";
       };
     };

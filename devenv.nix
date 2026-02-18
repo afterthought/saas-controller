@@ -89,14 +89,27 @@ in
       example = lib.literalExpression ''
         {
           tailscale = {
-            TS_CLIENT_SECRET = { description = "Tailscale OAuth client secret"; providers = [ "saas-controller" ]; };
-            TS_CLIENT_ID = { description = "Tailscale OAuth client ID"; required = false; providers = [ "saas-controller" ]; };
+            TS_CLIENT_SECRET = { description = "Tailscale OAuth client secret"; };
+            TS_CLIENT_ID = { description = "Tailscale OAuth client ID"; required = false; };
           };
           zuplo-backend = {
-            ZUPLO_API_KEY = { description = "Zuplo API key for deployments"; providers = [ "saas-controller" ]; };
+            ZUPLO_API_KEY = { description = "Zuplo API key for deployments"; };
           };
         }
       '';
+    };
+
+    # Default secretspec provider aliases applied to all profiles unless overridden
+    defaultProviders = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ "saas-controller" ];
+      description = ''
+        Default provider aliases for all secret profiles.
+        Emitted as [profiles.<env>.defaults] providers in generated secretspec.toml.
+        Override per-service with services.<name>.secretspec.defaultProviders
+        or per-environment with services.<name>.secretspec.environments.<env>.defaultProviders.
+      '';
+      example = [ "acme-vault" "saas-controller" ];
     };
 
     # Directory containing SA token secretspec managed by __mac-nix
@@ -338,9 +351,29 @@ in
           secretspec = lib.mkOption {
             type = lib.types.nullOr (lib.types.submodule {
               options = {
+                defaultProviders = lib.mkOption {
+                  type = lib.types.nullOr (lib.types.listOf lib.types.str);
+                  default = null;
+                  description = ''
+                    Override default provider aliases for this service's secret profiles.
+                    When null, inherits from saas-controller.defaultProviders.
+                  '';
+                  example = [ "billing-vault" ];
+                };
+
                 environments = lib.mkOption {
                   type = lib.types.attrsOf (lib.types.submodule {
                     options = {
+                      defaultProviders = lib.mkOption {
+                        type = lib.types.nullOr (lib.types.listOf lib.types.str);
+                        default = null;
+                        description = ''
+                          Override default provider aliases for this environment.
+                          When null, inherits from service-level or global defaultProviders.
+                        '';
+                        example = [ "env" ];
+                      };
+
                       serviceProfiles = lib.mkOption {
                         type = lib.types.listOf lib.types.str;
                         description = "List of secret profile names from saas-controller.secretProfiles to validate for this environment";
@@ -599,6 +632,12 @@ in
       #   2. Provider-contributed profiles auto-included from providers.<provider>.secretProfiles
       #   3. Per-instance inline secrets from environment's secrets option
       # First occurrence wins on duplicate secret names.
+      # Resolve default providers: environment > service > global (first non-null wins)
+      resolveDefaultProviders = secretspecCfg: envCfg:
+        if envCfg.defaultProviders != null then envCfg.defaultProviders
+        else if secretspecCfg.defaultProviders != null then secretspecCfg.defaultProviders
+        else config.saas-controller.defaultProviders;
+
       mkServiceSecretspecToml = serviceName: service:
         let
           secretspecCfg = service.secretspec;
@@ -611,6 +650,12 @@ in
           # For each environment, collect the union of secrets from all three layers
           envSections = lib.concatStringsSep "\n\n" (lib.mapAttrsToList (envName: envCfg:
             let
+              # Resolve default providers for this environment
+              defaultProviders = resolveDefaultProviders secretspecCfg envCfg;
+              defaultsSection = ''
+[profiles.${envName}.defaults]
+providers = [${lib.concatMapStringsSep ", " (p: ''"${p}"'') defaultProviders}]'';
+
               # Prepend provider profiles to explicit serviceProfiles (deduped)
               allProfileNames = lib.unique (providerProfileNames ++ envCfg.serviceProfiles);
 
@@ -638,6 +683,8 @@ in
               secretLines = lib.concatStringsSep "\n" (lib.mapAttrsToList mkSecretToml allSecrets);
             in
             ''
+${defaultsSection}
+
 [profiles.${envName}]
 ${secretLines}''
           ) secretspecCfg.environments);
@@ -780,9 +827,9 @@ SECRETSPEC_EOF
         )
         ({
           tailscale = {
-            TS_CLIENT_SECRET = { description = "Tailscale OAuth client secret for ephemeral node creation"; providers = [ "saas-controller" ]; };
-            TS_CLIENT_ID = { description = "Tailscale OAuth client ID"; required = false; providers = [ "saas-controller" ]; };
-            SC_TAILNET = { description = "Tailnet MagicDNS suffix, e.g. my-tailnet.ts.net (auto-detected if host tailscale installed)"; required = false; providers = [ "saas-controller" ]; };
+            TS_CLIENT_SECRET = { description = "Tailscale OAuth client secret for ephemeral node creation"; };
+            TS_CLIENT_ID = { description = "Tailscale OAuth client ID"; required = false; };
+            SC_TAILNET = { description = "Tailnet MagicDNS suffix, e.g. my-tailnet.ts.net (auto-detected if host tailscale installed)"; required = false; };
           };
         } // providerSecretProfiles);
 

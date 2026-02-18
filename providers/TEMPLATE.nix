@@ -10,10 +10,14 @@
   # Profiles declared here are automatically merged into saas-controller.secretProfiles.
   # When a service uses this provider, the provider's profiles are AUTO-INCLUDED
   # in the service's secretspec — no need to add them to serviceProfiles manually.
+  #
+  # Secrets inherit default providers from saas-controller.defaultProviders (profile-level defaults).
+  # Only specify `providers` on a secret if it needs a DIFFERENT alias than the project default.
   # secretProfiles = {
   #   my-provider = {
-  #     MY_API_KEY = { description = "API key for my-provider"; providers = [ "saas-controller" ]; };
-  #     MY_SECRET = { description = "Shared secret"; required = false; providers = [ "saas-controller" ]; };
+  #     MY_API_KEY = { description = "API key for my-provider"; };
+  #     MY_SECRET = { description = "Shared secret"; required = false; };
+  #     SPECIAL_KEY = { description = "From a different vault"; providers = [ "other-vault" ]; };
   #   };
   # };
   #
