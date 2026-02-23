@@ -7,6 +7,31 @@ let
   getEnabledEnvironments = service:
     lib.filterAttrs (_: env: env.enable) service.environments;
 
+  # Generate bash snippet to validate that $ENV matches a configured environment.
+  # Embeds the list of valid names at nix-eval time so runtime gets a clear error
+  # instead of silently succeeding when no if-block matches.
+  mkEnvValidation = enabledEnvs:
+    let
+      names = builtins.attrNames enabledEnvs;
+      namesList = lib.concatStringsSep " " (map (n: ''"${n}"'') names);
+    in ''
+          # Validate environment against configured environments
+          VALID_ENVS=(${namesList})
+          ENV_MATCHED=false
+          for _v in "''${VALID_ENVS[@]}"; do
+            if [ "$ENV" = "$_v" ]; then
+              ENV_MATCHED=true
+              break
+            fi
+          done
+          if [ "$ENV_MATCHED" = "false" ]; then
+            echo "❌ Error: environment '$ENV' is not configured" >&2
+            echo "  Configured environments: ${lib.concatStringsSep ", " names}" >&2
+            echo "  Check your service's environments block in devenv.nix" >&2
+            exit 1
+          fi
+    '';
+
   # Run hooks for a service (pre-deploy or post-deploy)
   # Orchestrates all hooks (secretspec, frontegg, datadog) in order
   # Args:
@@ -66,6 +91,7 @@ in
     let
       provider = providers.${exportConfig.provider};
       taskName = "saas-secret-export:${exportName}";
+      enabledEnvs = getEnabledEnvironments exportConfig;
     in
     {
       name = taskName;
@@ -81,6 +107,8 @@ in
             echo "❌ Error: 'environment' field required in JSON input" >&2
             exit 1
           fi
+
+          ${mkEnvValidation enabledEnvs}
 
           echo "🔐 Exporting secrets: ${exportName} → $ENV"
 
@@ -126,6 +154,7 @@ in
   mkPreDeployTask = serviceName: service:
     let
       taskName = "saas-pre-deploy:${serviceName}";
+      enabledEnvs = getEnabledEnvironments service;
     in
     {
       name = taskName;
@@ -141,6 +170,8 @@ in
             echo "❌ Error: 'environment' field required in JSON input" >&2
             exit 1
           fi
+
+          ${mkEnvValidation enabledEnvs}
 
           echo "⚡ Pre-deploy hooks: ${serviceName} → $ENV"
 
@@ -183,6 +214,7 @@ in
     let
       provider = providers.${service.provider};
       taskName = "saas-deploy:${serviceName}";
+      enabledEnvs = getEnabledEnvironments service;
     in
     {
       name = taskName;
@@ -198,6 +230,8 @@ in
             echo "❌ Error: 'environment' field required in JSON input" >&2
             exit 1
           fi
+
+          ${mkEnvValidation enabledEnvs}
 
           echo "🚀 Deploying: ${serviceName} → $ENV"
 
@@ -264,6 +298,7 @@ in
   mkPostDeployTask = serviceName: service:
     let
       taskName = "saas-post-deploy:${serviceName}";
+      enabledEnvs = getEnabledEnvironments service;
     in
     {
       name = taskName;
@@ -279,6 +314,8 @@ in
             echo "❌ Error: 'environment' field required in JSON input" >&2
             exit 1
           fi
+
+          ${mkEnvValidation enabledEnvs}
 
           echo "⚡ Post-deploy hooks: ${serviceName} → $ENV"
 
