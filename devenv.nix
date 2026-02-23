@@ -589,7 +589,7 @@ in
       anySaasOperationsEnabled = anyServicesEnabled || anySecretExportsEnabled;
 
       # Valid environment names (constrained set)
-      validEnvironments = [ "local" "production" "preview" ];
+      validEnvironments = [ "local" "main" "preview" ];
 
       # List of all registered providers (builtin + external)
       validProviders = lib.attrNames providers;
