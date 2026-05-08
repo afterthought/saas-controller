@@ -955,8 +955,8 @@ SECRETSPEC_EOF
             src = prev.fetchFromGitHub {
               owner = "afterthought";
               repo = "secretspec";
-              rev = "da3b81235fb75271e632527b79df38b49bc12d6f";
-              sha256 = "sha256-pE1n096SlcNegs6zs+CAJJ1dnwXysqpkpujLq9Y2cMU=";
+              rev = "0302b03bd82f0afcd23de97a8829577f4d92213e";
+              sha256 = "sha256-5ghXgvwoVuy3dJ3plPNdOipnUJpeV5pZABT/kZA97uY=";
             };
 
             cargoLock = {
